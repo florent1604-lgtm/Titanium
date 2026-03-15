@@ -1,0 +1,2486 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Titanium Dashboard v4 — SMC Live /7</title>
+<script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+// Multi-CDN loader for LightweightCharts
+(function() {
+  var cdns = [
+    "https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js",
+    "https://cdn.jsdelivr.net/npm/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.js"
+  ];
+  var idx = 0;
+  function tryLoad() {
+    if (idx >= cdns.length) {
+      document.getElementById('log').innerHTML = '<div class="le le-sig"><span class="lts">[ERR]</span> Impossible de charger LightweightCharts. Vérifie ta connexion internet.</div>';
+      return;
+    }
+    var s = document.createElement('script');
+    s.src = cdns[idx];
+    s.onload = function() { console.log('LightweightCharts loaded from: ' + cdns[idx-1]); };
+    s.onerror = function() { idx++; tryLoad(); };
+    document.head.appendChild(s);
+    idx++;
+  }
+  tryLoad();
+})();
+</script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap');
+  :root{
+    --bg:#08090d;--panel:#0e1016;--border:#1c1f2b;--accent:#f0b429;
+    --green:#00e676;--red:#ff1744;--blue:#40c4ff;--purple:#b388ff;
+    --text:#e8eaf0;--muted:#5a6070;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:'JetBrains Mono',monospace}
+
+  /* TIMEFRAME BAR */
+  #tf-bar{height:32px;display:flex;align-items:center;gap:4px;padding:0 14px;background:#080a0f;border-bottom:1px solid var(--border)}
+  .tf{height:22px;padding:0 10px;border-radius:3px;font-size:11px;font-weight:700;cursor:pointer;border:1px solid transparent;transition:.12s;color:var(--muted);background:transparent;font-family:'JetBrains Mono',monospace;letter-spacing:.04em}
+  .tf:hover{color:var(--text);border-color:var(--border)}
+  .tf.on{color:#08090d;background:var(--accent);border-color:var(--accent)}
+  .tf-sep{width:1px;height:14px;background:var(--border);margin:0 4px}
+
+  /* HEADER */
+  #header{height:42px;display:flex;align-items:center;justify-content:space-between;padding:0 20px;background:var(--panel);border-bottom:1px solid var(--border)}
+  .logo{font-family:'Syne',sans-serif;font-weight:800;font-size:17px;color:var(--accent)}
+  .logo span{color:var(--text);font-weight:400}
+  .hstatus{display:flex;gap:14px;align-items:center}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--red);box-shadow:0 0 6px var(--red)}
+  .dot.live{background:var(--green);box-shadow:0 0 6px var(--green);animation:pulse 2s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  #clock,#ws-status{font-size:11px;color:var(--muted)}
+  /* TABS */
+  #tabs{height:36px;display:flex;align-items:center;gap:2px;padding:0 14px;background:var(--panel);border-bottom:1px solid var(--border)}
+  .tab{height:26px;padding:0 14px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:.15s;color:var(--muted);display:flex;align-items:center}
+  .tab:hover{color:var(--text);border-color:var(--border)}
+  .tab.active{color:var(--accent);border-color:var(--accent);background:rgba(240,180,41,0.07)}
+  /* LAYOUT */
+  #main{display:flex;position:absolute;top:110px;bottom:48px;left:0;right:0}
+  /* CHART */
+  #chart-wrap{flex:1;position:relative;overflow:hidden}
+  #chart-container{position:absolute;top:0;left:0;right:0;bottom:0}
+  /* SIDEBAR */
+  #sidebar{width:255px;background:var(--panel);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow-y:scroll;flex-shrink:0;scroll-behavior:smooth;min-height:0}
+  /* Collapse sections */
+  .ss-toggle{cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none}
+  .ss-toggle:hover .stitle{color:var(--accent)}
+  .ss-arrow{font-size:9px;color:var(--muted);transition:transform .2s;flex-shrink:0}
+  .ss-arrow.closed{transform:rotate(-90deg)}
+  .ss-body{overflow:hidden;transition:max-height .25s ease}
+  .ss-body.closed{max-height:0!important}
+  .ss{padding:10px 13px;border-bottom:1px solid var(--border)}
+  .stitle{font-size:9px;font-weight:700;letter-spacing:.12em;color:var(--muted);text-transform:uppercase;margin-bottom:8px}
+  /* SCORE */
+  .score-ring{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+  .ring-w{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;position:relative;flex-shrink:0}
+  .ring-val{font-family:'Syne',sans-serif;font-size:20px;font-weight:800;position:relative;z-index:1}
+  .score-info{flex:1}
+  .score-label{font-size:10px;color:var(--muted)}
+  .score-side{font-size:13px;font-weight:700;margin-top:2px}
+  /* CHIPS */
+  .chips{display:flex;flex-wrap:wrap;gap:3px;margin-top:5px}
+  .chip{padding:2px 7px;border-radius:3px;font-size:9px;font-weight:600;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);color:var(--muted)}
+  .chip.on{background:rgba(240,180,41,.12);border-color:var(--accent);color:var(--accent)}
+  /* LEVELS */
+  .lrow{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:11px}
+  .llabel{color:var(--muted);font-size:10px}
+  .lval{font-weight:600}
+  .lv-e{color:var(--blue)}.lv-s{color:var(--red)}.lv-t{color:var(--green)}
+  /* ZONES */
+  .zrow{display:flex;justify-content:space-between;padding:3px 0;font-size:10px;border-bottom:1px solid rgba(255,255,255,.03)}
+  .zt{padding:1px 5px;border-radius:2px;font-weight:700;font-size:9px}
+  .fvg-b{background:rgba(0,230,118,.12);color:var(--green)}
+  .fvg-s{background:rgba(255,23,68,.12);color:var(--red)}
+  .ob-b{background:rgba(64,196,255,.12);color:var(--blue)}
+  .ob-s{background:rgba(179,136,255,.12);color:var(--purple)}
+  /* TOOLS */
+  .tools{display:flex;gap:5px;flex-wrap:wrap}
+  .tbtn{padding:4px 10px;border-radius:4px;font-size:10px;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);font-family:'JetBrains Mono',monospace;transition:.15s}
+  .tbtn:hover,.tbtn.on{border-color:var(--accent);color:var(--accent);background:rgba(240,180,41,.08)}
+  /* LOG */
+  #log{flex:1;overflow-y:auto;padding:6px;font-size:10px;line-height:1.6}
+  .le{padding:2px 5px;border-radius:2px;margin-bottom:2px;border-left:2px solid}
+  .le-sig{border-color:var(--accent);background:rgba(240,180,41,.04)}
+  .le-inf{border-color:var(--muted);background:rgba(255,255,255,.02)}
+  .lts{color:var(--muted)}
+  ::-webkit-scrollbar{width:3px}
+  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+  /* BOTTOM */
+  #bottom{height:48px;position:absolute;bottom:0;left:0;right:0;display:flex;align-items:center;gap:10px;padding:0 14px;background:var(--panel);border-top:1px solid var(--border);overflow-x:auto}
+  .scard{display:flex;align-items:center;gap:8px;padding:4px 12px;border-radius:4px;border:1px solid var(--border);cursor:pointer;transition:.15s;white-space:nowrap;flex-shrink:0}
+  .scard:hover,.scard.on{border-color:var(--accent)}
+  .sname{font-size:11px;font-weight:700}
+  .sprice{font-size:11px;color:var(--muted)}
+  .ssc{font-size:10px;padding:1px 5px;border-radius:2px;font-weight:700}
+  .sc0,.sc1,.sc2{background:rgba(90,96,112,.2);color:var(--muted)}
+  .sc3{background:rgba(64,196,255,.12);color:var(--blue)}
+  .sc4{background:rgba(240,180,41,.12);color:var(--accent)}
+  .sc5{background:rgba(0,230,118,.15);color:var(--green)}
+  .sc6{background:rgba(0,230,118,.22);color:var(--green);animation:pulse 1.5s infinite}
+  .sc7{background:rgba(0,230,118,.32);color:#00ff8c;animation:pulse 1s infinite;box-shadow:0 0 8px rgba(0,230,118,.35)}
+
+  /* OB STATUS badges */
+  .ob-intact{color:var(--green);font-size:9px;padding:1px 4px;border-radius:2px;background:rgba(0,230,118,.1);border:1px solid rgba(0,230,118,.3)}
+  .ob-tested{color:var(--accent);font-size:9px;padding:1px 4px;border-radius:2px;background:rgba(240,180,41,.1);border:1px solid rgba(240,180,41,.3)}
+  .ob-broken{color:var(--red);font-size:9px;padding:1px 4px;border-radius:2px;background:rgba(255,23,68,.08);border:1px solid rgba(255,23,68,.25);text-decoration:line-through}
+  .ob-fvg{color:#40c4ff;font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(64,196,255,.1);border:1px solid rgba(64,196,255,.3)}
+
+  /* Range 30m / double confirm badges */
+  .badge-range{color:var(--accent);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(240,180,41,.08);border:1px solid rgba(240,180,41,.25)}
+  .badge-dblconf{color:var(--green);font-size:9px;padding:1px 5px;border-radius:2px;background:rgba(0,230,118,.1);border:1px solid rgba(0,230,118,.3)}
+
+  /* LEARNING panel */
+  .learn-row{display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:10px}
+  .learn-row:last-child{border-bottom:none}
+  .learn-k{color:var(--muted)}
+  .learn-w{font-weight:700;font-size:11px}
+  .learn-up{color:var(--green)}.learn-dn{color:var(--red)}.learn-eq{color:var(--muted)}
+  .learn-confirm-btn{font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid rgba(0,230,118,.4);background:rgba(0,230,118,.08);color:#b9ffd9;cursor:pointer}
+  .learn-confirm-btn:hover{background:rgba(0,230,118,.15)}
+  .learn-reject-btn{font-size:10px;padding:3px 10px;border-radius:4px;border:1px solid rgba(255,23,68,.3);background:rgba(255,23,68,.06);color:#ff8a8a;cursor:pointer}
+  .learn-reject-btn:hover{background:rgba(255,23,68,.12)}
+
+
+  /* VISION PANEL */
+  #vision-btn{position:absolute;top:10px;right:10px;z-index:100;
+    padding:7px 16px;border-radius:5px;font-size:11px;font-weight:700;
+    cursor:pointer;border:1px solid var(--accent);background:rgba(240,180,41,.1);
+    color:var(--accent);font-family:'JetBrains Mono',monospace;transition:.15s;
+    display:flex;align-items:center;gap:6px}
+  #vision-btn:hover{background:var(--accent);color:#08090d}
+  #vision-btn.loading{opacity:.6;pointer-events:none}
+  #vision-btn .vdot{width:7px;height:7px;border-radius:50%;background:var(--accent)}
+  #vision-btn.loading .vdot{animation:pulse 0.6s infinite}
+  /* VISION RESULT OVERLAY */
+  #vision-panel{display:none;position:absolute;bottom:0;left:0;right:0;
+    background:rgba(8,9,13,.95);border-top:1px solid var(--accent);
+    padding:10px 14px;z-index:50;max-height:180px;overflow-y:auto;font-size:11px}
+  #vision-panel.show{display:block}
+  .vp-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+  .vp-title{font-family:'Syne',sans-serif;font-size:12px;font-weight:700;color:var(--accent)}
+  .vp-close{cursor:pointer;color:var(--muted);font-size:14px}
+  .vp-body{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .vp-col{display:flex;flex-direction:column;gap:3px}
+  .vp-row{display:flex;justify-content:space-between;font-size:10px}
+  .vp-label{color:var(--muted)}
+  .vp-val{font-weight:600}
+  .vp-narrative{grid-column:1/-1;font-size:10px;color:var(--text);
+    padding:6px;background:rgba(255,255,255,.04);border-radius:3px;border-left:2px solid var(--accent);
+    margin-top:4px;line-height:1.6}
+  .vp-error{grid-column:1/-1;font-size:10px;color:var(--red);padding:6px;background:rgba(255,23,68,.07);border-radius:3px;border-left:2px solid var(--red);margin-top:4px}
+  #vision-panel{max-height:240px}
+  .conf-bar{width:100%;height:4px;background:rgba(255,255,255,.08);border-radius:2px;margin-top:3px;overflow:hidden}
+  .conf-fill{height:100%;border-radius:2px;transition:width .5s ease;background:var(--green)}
+  .vbull{color:var(--green)}.vbear{color:var(--red)}.vneutre{color:var(--muted)}
+
+  /* SOURCE BADGE */
+  .src-badge{font-size:9px;padding:1px 6px;border-radius:2px;font-weight:700;margin-left:6px;vertical-align:middle}
+  .src-live{background:rgba(0,230,118,.15);color:var(--green);border:1px solid rgba(0,230,118,.3)}
+  .src-bot{background:rgba(240,180,41,.15);color:var(--accent);border:1px solid rgba(240,180,41,.3)}
+  /* Signal flash animation */
+  @keyframes flash{0%{background:rgba(240,180,41,.2)}100%{background:transparent}}
+  .flash{animation:flash .8s ease-out}
+
+  /* waiting */
+  #waiting{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;color:var(--muted)}
+  #waiting .w-big{font-family:'Syne',sans-serif;font-size:14px;color:var(--text);margin-bottom:6px}
+  #spin{width:24px;height:24px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 8px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+
+  /* STRICT PANEL */
+  #strict-box{border:1px solid rgba(255,255,255,.06);background:rgba(255,255,255,.02);border-radius:6px}
+  .strict-head{display:flex;justify-content:space-between;align-items:center}
+  .strict-title{font-size:9px;font-weight:800;letter-spacing:.12em;color:var(--muted);text-transform:uppercase}
+  .strict-pill{font-size:9px;padding:1px 6px;border-radius:999px;border:1px solid rgba(255,255,255,.10);color:var(--muted)}
+  .strict-pill.ok{border-color:rgba(0,230,118,.35);color:var(--green);background:rgba(0,230,118,.08)}
+  .strict-pill.no{border-color:rgba(255,23,68,.35);color:var(--red);background:rgba(255,23,68,.06)}
+  .strict-row{display:flex;justify-content:space-between;gap:10px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:10px}
+  .strict-row:last-child{border-bottom:none}
+  .strict-k{color:var(--muted)}
+  .strict-v{font-weight:700}
+  #strict-heatmap-wrap{margin-top:8px;border:1px solid rgba(255,255,255,.06);border-radius:6px;padding:6px;background:rgba(8,9,13,.35)}
+  #strict-heatmap{width:100%;height:auto;display:block;image-rendering:pixelated}
+#strict-status-board{margin-top:8px;border:1px solid rgba(255,255,255,.06);border-radius:6px;padding:8px;background:rgba(8,9,13,.35)}
+#strict-monitor-panel{margin-top:8px;border:1px solid rgba(255,255,255,.06);border-radius:6px;padding:8px;background:rgba(8,9,13,.35)}
+#strict-monitor-table{width:100%;border-collapse:collapse;font-size:10px}
+#strict-monitor-table th,#strict-monitor-table td{padding:6px 6px;border-bottom:1px solid rgba(255,255,255,.06);text-align:left;vertical-align:top}
+#strict-monitor-table th{color:var(--muted);font-weight:600}
+.strict-phase{color:#c9d4ff}
+.strict-dur{color:#d8ffd8}
+.strict-it{color:#ffe7c2}
+.strict-cpu{color:#ffd1f5}
+
+.strict-srow{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.05)}
+.strict-srow:last-child{border-bottom:none}
+.strict-sym{font-weight:700;font-size:11px}
+.strict-badges{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.strict-badge{font-size:10px;padding:2px 6px;border-radius:999px;border:1px solid rgba(255,255,255,.10);color:var(--muted)}
+.strict-badge.ok{border-color:rgba(0,230,118,.35);color:#00e676;background:rgba(0,230,118,.08)}
+.strict-badge.run{border-color:rgba(240,180,41,.35);color:#f0b429;background:rgba(240,180,41,.08)}
+.strict-badge.wait{border-color:rgba(150,160,180,.25);color:#9aa4b2;background:rgba(150,160,180,.06)}
+.strict-badge.err{border-color:rgba(255,23,68,.35);color:#ff1744;background:rgba(255,23,68,.08)}
+.strict-age{font-size:10px;color:var(--muted)}
+.strict-recal-btn{font-size:10px;padding:3px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:var(--text);cursor:pointer}
+.strict-recal-btn:hover{border-color:rgba(240,180,41,.45);background:rgba(240,180,41,.10)}
+.strict-recal-btn:disabled{opacity:.45;cursor:not-allowed}
+
+.strict-recal-all{font-size:10px;padding:3px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.14);background:rgba(0,230,118,.08);color:#b9ffd9;cursor:pointer}
+.strict-recal-all:hover{background:rgba(0,230,118,.14);border-color:rgba(0,230,118,.35)}
+.strict-detail-btn{font-size:10px;padding:3px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.04);color:var(--text);cursor:pointer}
+.strict-detail-btn:hover{border-color:rgba(240,180,41,.45);background:rgba(240,180,41,.10)}
+
+#strict-modal{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;justify-content:center;z-index:9999}
+#strict-modal.show{display:flex}
+.strict-modal-card{width:min(980px,94vw);height:min(720px,90vh);background:rgba(10,12,18,.98);border:1px solid rgba(255,255,255,.10);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.55);display:flex;flex-direction:column;overflow:hidden}
+.strict-modal-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.08)}
+.strict-modal-title{font-weight:800;letter-spacing:.3px}
+.strict-modal-tabs{display:flex;gap:8px;align-items:center}
+.strict-tab{font-size:11px;padding:4px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.12);color:var(--muted);cursor:pointer}
+.strict-tab.on{color:#fff;border-color:rgba(240,180,41,.35);background:rgba(240,180,41,.10)}
+.strict-modal-body{flex:1;display:flex;gap:10px;padding:10px;overflow:hidden}
+.strict-col{flex:1;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.02);padding:10px;overflow:auto}
+.strict-kv{display:grid;grid-template-columns:160px 1fr;gap:6px 10px;font-size:11px;line-height:1.35}
+.strict-kv .k{color:var(--muted)}
+.strict-log{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;font-size:11px;line-height:1.35;white-space:pre-wrap}
+.strict-table{width:100%;border-collapse:collapse;font-size:11px}
+.strict-table th,.strict-table td{border-bottom:1px solid rgba(255,255,255,.08);padding:6px 6px;text-align:left;vertical-align:top}
+#strict-zones-chart-wrap{margin:10px 0;border:1px solid rgba(255,255,255,.08);border-radius:8px;background:rgba(255,255,255,.02);padding:10px}
+#strict-zones-chart{width:100%;height:220px}
+
+.strict-table th{color:var(--muted);font-weight:700}
+.strict-muted{color:var(--muted)}
+
+
+
+  #strict-zones{margin-top:6px;font-size:10px;color:var(--muted);line-height:1.45}
+  .strict-link{font-size:10px;color:var(--accent);text-decoration:none;border:1px solid rgba(240,180,41,.35);padding:2px 8px;border-radius:999px}
+  .strict-link:hover{background:rgba(240,180,41,.10)}
+
+
+  body.light-mode{
+    --bg:#f3f4f6;--panel:#ffffff;--border:#d1d5db;--accent:#d97706;
+    --green:#16a34a;--red:#ef4444;--blue:#2563eb;--purple:#7c3aed;
+    --text:#111827;--muted:#6b7280;
+  }
+  #theme-toggle{position:absolute;top:10px;left:10px;z-index:120;
+    padding:6px 10px;border-radius:6px;font-size:11px;font-weight:700;
+    cursor:pointer;border:1px solid var(--border);background:rgba(255,255,255,.04);
+    color:var(--text);font-family:'JetBrains Mono',monospace}
+  #theme-toggle:hover{border-color:var(--accent);color:var(--accent)}
+</style>
+</head>
+<body>
+<button id="theme-toggle" onclick="toggleTheme()">Mode clair</button>
+
+<div id="header">
+  <div class="logo">TITANIUM <span>DASHBOARD</span> <span style="font-size:10px;color:var(--muted);margin-left:6px">SMC V25 LIVE</span></div>
+  <div class="hstatus">
+    <div class="dot" id="dot"></div>
+    <span id="ws-status">CONNECTING</span>
+    <span id="clock"></span>
+  </div>
+</div>
+
+<div id="tabs"></div>
+
+
+<div id="tf-bar">
+  <button class="tf" data-tf="30s" onclick="setTF('30s')">30s</button>
+  <button class="tf on" data-tf="1m" id="tf-1m" onclick="setTF('1m')">1m</button>
+  <button class="tf" data-tf="3m" onclick="setTF('3m')">3m</button>
+  <button class="tf" data-tf="5m" onclick="setTF('5m')">5m</button>
+  <button class="tf" data-tf="15m" onclick="setTF('15m')">15m</button>
+  <button class="tf" data-tf="30m" onclick="setTF('30m')">30m</button>
+  <div class="tf-sep"></div>
+  <button class="tf" data-tf="1h" onclick="setTF('1h')">1H</button>
+  <button class="tf" data-tf="2h" onclick="setTF('2h')">2H</button>
+  <button class="tf" data-tf="4h" onclick="setTF('4h')">4H</button>
+  <button class="tf" data-tf="1d" onclick="setTF('1d')">1D</button>
+</div>
+
+<div id="main">
+  <div id="chart-wrap">
+    
+    <button id="vision-btn" onclick="runVisionAnalysis()">
+      <div class="vdot"></div> Analyser (Vision IA)
+    </button>
+    <div id="trix-legend" style="position:absolute;top:10px;left:10px;z-index:50;font-size:9px;color:var(--muted);background:rgba(8,9,13,.75);padding:4px 8px;border-radius:3px;border:1px solid rgba(240,180,41,.25);pointer-events:none">
+      <span style="display:inline-block;width:10px;height:10px;background:rgba(240,180,41,0.55);border:1px solid #f0b429;border-radius:1px;vertical-align:middle;margin-right:4px"></span>Bougie Trix Strict (entrée 5m)
+    </div>
+    <div id="vision-panel">
+      <div class="vp-header">
+        <span class="vp-title">ANALYSE VISUELLE — CLAUDE VISION</span>
+        <span class="vp-close" onclick="document.getElementById('vision-panel').classList.remove('show')">✕</span>
+      </div>
+      <div class="vp-body" id="vp-body">
+        <div style="color:var(--muted)">En attente d'analyse...</div>
+      </div>
+    </div>
+
+    <div id="chart-container">
+      <div id="waiting">
+        <div id="spin"></div>
+        <div class="w-big">Connexion Binance...</div>
+        <div>En attente des données de marché</div>
+      </div>
+    </div>
+  </div>
+  <div id="sidebar">
+    <div class="ss">
+      <div class="ss-toggle" onclick="toggleSection('score')">
+        <div class="stitle">Score SMC <span id="src-badge" class="src-badge src-live">DASHBOARD</span></div>
+        <span class="ss-arrow" id="ss-arrow-score">▾</span></div>
+      <div class="ss-body" id="ss-body-score"><div class="score-ring">
+        <div class="ring-w">
+          <svg style="position:absolute;top:0;left:0" width="52" height="52">
+            <circle cx="26" cy="26" r="22" fill="none" stroke="rgba(255,255,255,.06)" stroke-width="4"/>
+            <circle id="rarc" cx="26" cy="26" r="22" fill="none" stroke-width="4"
+              stroke-dasharray="138.2" stroke-dashoffset="138.2"
+              stroke-linecap="round" transform="rotate(-90,26,26)"
+              style="transition:stroke-dashoffset .5s,stroke .5s"/>
+          </svg>
+          <span class="ring-val" id="rval">—</span>
+        </div>
+        <div class="score-info">
+          <div class="score-label">SCORE <span id="score-max-label" style="color:var(--muted)">/7</span></div>
+          <div class="score-side" id="rside">—</div>
+          <div id="score-quality" style="font-size:9px;margin-top:2px;color:var(--muted)"></div>
+        </div>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div id="mtf-struct" style="margin-top:5px;padding:3px 0;font-size:9px;color:var(--muted)">H2 — | H1 —</div>
+      <div id="ob-context-bar" style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px"></div>
+      </div></div>
+
+    <div class="ss">
+      <div class="ss-toggle" onclick="toggleSection('levels')">
+        <div class="stitle">Niveaux</div><span class="ss-arrow" id="ss-arrow-levels">▾</span></div>
+      <div class="ss-body" id="ss-body-levels">
+      <div class="lrow"><span class="llabel">ENTRÉE <span id="entry-tf-badge" style="font-size:8px;color:var(--muted)">3m</span></span><span class="lval lv-e" id="lv-e">—</span></div>
+      <div class="lrow"><span class="llabel">STOP LOSS</span><span class="lval lv-s" id="lv-s">—</span></div>
+      <div class="lrow"><span class="llabel">TP 1</span><span class="lval lv-t" id="lv-t1">—</span></div>
+      <div class="lrow"><span class="llabel">TP 2</span><span class="lval lv-t" id="lv-t2">—</span></div>
+      <div class="lrow"><span class="llabel">TP 3</span><span class="lval lv-t" id="lv-t3">—</span></div>
+      <div class="lrow" style="border:none"><span class="llabel">TP 4</span><span class="lval lv-t" id="lv-t4">—</span></div>
+      <div id="fvg-ob-confirm" style="display:none;margin-top:5px;padding:4px 6px;background:rgba(0,230,118,.07);border-radius:3px;border-left:2px solid var(--green);font-size:9px;color:var(--green)">
+        ✅ Double confirmation FVG⊂OB — TP élargis ×1.1
+      </div>
+      </div></div>
+
+    <div class="ss">
+      <div class="ss-toggle" onclick="toggleSection('zones')">
+        <div class="stitle">Zones SMC</div><span class="ss-arrow" id="ss-arrow-zones">▾</span></div>
+      <div class="ss-body" id="ss-body-zones"><div id="zones"><span style="color:var(--muted);font-size:10px">En attente...</span></div>
+    </div>
+
+    <div class="ss">
+      <div class="ss-toggle" onclick="toggleSection('patterns')">
+        <div class="stitle">Patterns Bougies <span id="pat-count" style="color:var(--muted);font-weight:400"></span></div>
+        <span class="ss-arrow" id="ss-arrow-patterns">▾</span></div>
+      <div class="ss-body" id="ss-body-patterns"><div id="patbox"><span style="color:var(--muted);font-size:10px">En attente...</span></div>
+    </div>
+
+    <!-- LEARNING PANEL (Module 4 v4) -->
+    <div class="ss" id="learning-panel">
+      <div class="ss-toggle" onclick="toggleSection('learning')">
+        <div class="stitle">Apprentissage adaptatif <span id="learning-pending-dot" style="display:none;color:var(--accent)">●</span></div>
+        <span class="ss-arrow" id="ss-arrow-learning">▾</span>
+      </div>
+      <div class="ss-body closed" id="ss-body-learning" style="max-height:0">
+        <div id="learning-content">
+          <div style="color:var(--muted);font-size:10px">Rapport disponible après 10 signaux</div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:8px" id="learning-actions" style="display:none">
+          <button class="learn-confirm-btn" onclick="learningConfirm(true)">✓ Appliquer</button>
+          <button class="learn-reject-btn" onclick="learningConfirm(false)">✗ Rejeter</button>
+        </div>
+      </div>
+    </div>
+
+
+    <div class="ss" id="strict-status-panel">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+  <div class="stitle">STRICT — Recalibrage</div>
+  <div style="display:flex;gap:6px;align-items:center">
+    <button class="strict-recal-all" onclick="strictRecalibrateAll()">Recalibrer tout</button>
+    <button class="strict-detail-btn" onclick="openStrictModal()">Détails</button>
+  </div>
+</div>
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin:4px 0 6px 0">
+    <div style="font-size:10px;color:var(--muted)">État par actif</div>
+    <div id="strict-status-last" style="font-size:10px;color:var(--muted)">MAJ: —</div>
+  </div>
+  <div id="strict-status-board"></div>
+  <div id="strict-monitor-panel" style="margin-top:8px">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <div class="stitle">Monitoring STRICT (temps réel)</div>
+      <div id="strict-monitor-last" style="font-size:10px;color:var(--muted)">MAJ: —</div>
+    </div>
+    <div id="strict-monitor-workers" style="margin:6px 0;font-size:10px;color:var(--muted)">Workers: —</div>
+    <div style="overflow:auto;max-height:220px">
+      <table id="strict-monitor-table">
+        <thead><tr>
+          <th>Symbole</th><th>État</th><th>Phase</th><th>Durée</th><th>Iters</th><th>CPU workers</th><th>Zones</th><th>Err</th>
+        </tr></thead>
+        <tbody id="strict-monitor-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<div class="ss" id="strict-box">
+      <div class="strict-head">
+        <div class="strict-title">STRICT (TRIX 5m)</div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span id="strict-pill" class="strict-pill">—</span>
+          <a id="strict-heatmap-link" class="strict-link" href="#" target="_blank">heatmap</a>
+        </div>
+      </div>
+
+      <div style="margin-top:8px" id="strict-content">
+        <div class="strict-row"><span class="strict-k">Sharpe</span><span class="strict-v" id="strict-sharpe">—</span></div>
+        <div class="strict-row"><span class="strict-k">Hist</span><span class="strict-v" id="strict-hist">—</span></div>
+        <div class="strict-row"><span class="strict-k">Trend</span><span class="strict-v" id="strict-trend">—</span></div>
+        <div class="strict-row"><span class="strict-k">Entry / Exit</span><span class="strict-v" id="strict-flags">—</span></div>
+        <div class="strict-row"><span class="strict-k">Params</span><span class="strict-v" id="strict-params" style="text-align:right">—</span></div>
+      </div>
+
+      <div id="strict-heatmap-wrap">
+        <canvas id="strict-heatmap" width="188" height="188"></canvas>
+        <div id="strict-zones">—</div>
+      </div>
+    </div>
+
+    <div class="ss">
+      <div class="stitle">Outils de tracé</div>
+      <div class="tools">
+        <button class="tbtn on" id="tool-none" onclick="setTool('none')">&#9654; Curseur</button>
+        <button class="tbtn" id="tool-hline" onclick="setTool('hline')">&#8212; H-Line</button>
+        <button class="tbtn" id="tool-zone" onclick="setTool('zone')">&#9635; Zone</button>
+        <button class="tbtn" onclick="clearDraw()">&#10005; Effacer</button>
+      </div>
+    </div>
+
+    <div class="ss" style="flex:1;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0">
+      <div class="stitle">Journal</div>
+      <div id="log">
+        <div class="le le-inf"><span class="lts">[INIT]</span> Démarrage...</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="bottom"></div>
+
+<script>
+function toggleTheme(){
+  try{
+    const b=document.body;
+    const on=b.classList.toggle('light-mode');
+    const btn=document.getElementById('theme-toggle');
+    if(btn) btn.textContent = on ? 'Mode sombre' : 'Mode clair';
+    // Rebuild chart to apply colors
+    if (activeSym) { try{ buildChart(activeSym); if(sigState[activeSym]) applySignal(activeSym, sigState[activeSym]); }catch(e){} }
+  }catch(e){}
+}
+
+// =============================================
+// STATE
+// =============================================
+let SYMBOLS = [];
+let activeSym = null;
+const sigState = {};
+const chartMap = {};
+// Stabilité : mémoriser si l'utilisateur a scrollé manuellement
+const _userScrolled = {}; // {sym: bool}
+const _lastVisibleRange = {}; // {sym: {from, to}}
+const drawMap  = {};
+let tool = 'none';
+
+// =============================================
+// CLOCK
+// =============================================
+setInterval(() => {
+  const d = new Date();
+  document.getElementById('clock').textContent =
+    d.toUTCString().match(/\d\d:\d\d:\d\d/)[0] + ' UTC';
+}, 1000);
+
+// =============================================
+// INIT
+// =============================================
+
+// ─── SIDEBAR COLLAPSE ──────────────────────────────────────────────────
+function toggleSection(id) {
+  const body  = document.getElementById('ss-body-' + id);
+  const arrow = document.getElementById('ss-arrow-' + id);
+  if (!body) return;
+  const closed = body.classList.toggle('closed');
+  if (arrow) arrow.classList.toggle('closed', closed);
+  body.style.maxHeight = closed ? '0' : '2000px';
+}
+function initSections() {
+  document.querySelectorAll('.ss-body').forEach(b => {
+    if (!b.classList.contains('closed')) b.style.maxHeight = '2000px';
+  });
+}
+async function init() {
+  try {
+    const r = await fetch('/api/state');
+    const d = await r.json();
+    SYMBOLS = d.symbols || [];
+    buildTabs();
+    buildBottom();
+    initSections();
+    SYMBOLS.forEach(s => {
+      sigState[s] = d.signals[s] || null;
+      drawMap[s]  = [];
+    });
+    if (SYMBOLS.length > 0) switchSym(SYMBOLS[0]);
+    SYMBOLS.forEach(s => startWS(s));
+  } catch(e) {
+    log('ERROR init: ' + e, 'inf');
+  }
+}
+
+// =============================================
+// TABS / BOTTOM
+// =============================================
+function buildTabs() {
+  const el = document.getElementById('tabs');
+  SYMBOLS.forEach(s => {
+    const t = document.createElement('div');
+    t.className = 'tab'; t.id = 'tab_' + esc(s);
+    t.textContent = s; t.onclick = () => switchSym(s);
+    el.appendChild(t);
+  });
+}
+
+function buildBottom() {
+  const el = document.getElementById('bottom');
+  SYMBOLS.forEach(s => {
+    const c = document.createElement('div');
+    c.className = 'scard'; c.id = 'card_' + esc(s);
+    c.onclick = () => switchSym(s);
+    c.innerHTML = `<span class="sname">${s}</span>
+      <span class="sprice" id="price_${esc(s)}">—</span>
+      <span class="ssc sc0" id="sc_${esc(s)}">—/7</span>`;
+    el.appendChild(c);
+  });
+}
+
+// =============================================
+// SWITCH SYMBOL
+// =============================================
+function switchSym(sym) {
+  activeSym = sym;
+  SYMBOLS.forEach(s => {
+    const active = s === sym;
+    document.getElementById('tab_' + esc(s))?.classList.toggle('active', active);
+    document.getElementById('card_' + esc(s))?.classList.toggle('on', active);
+  });
+  buildChart(sym);  // buildChart charge les bougies après resize (120ms)
+  if (sigState[sym]) applySignal(sym, sigState[sym]);
+  setTimeout(refreshLearningPanel, 200);
+}
+
+// =============================================
+// BUILD CHART
+// =============================================
+function buildChart(sym) {
+  const wrap = document.getElementById('chart-container');
+  wrap.innerHTML = '';
+
+  const w = wrap.clientWidth  || wrap.offsetWidth  || 800;
+  const h = wrap.clientHeight || wrap.offsetHeight || 500;
+
+  const chart = LightweightCharts.createChart(wrap, {
+    width: w, height: h,
+    layout: { background: {color:'#08090d'}, textColor:'#5a6070' },
+    grid: { vertLines:{color:'#111318'}, horzLines:{color:'#111318'} },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor:'#1c1f2b', autoScale: true },
+    timeScale: {
+      borderColor:'#1c1f2b',
+      timeVisible:true,
+      secondsVisible:true,
+      rightOffset: 10,
+      lockVisibleTimeRangeOnResize: true,
+      shiftVisibleRangeOnNewBar: true,
+    },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+    handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: true },
+  });
+
+  // Détecter le scroll manuel de l'utilisateur
+  _userScrolled[sym] = false;
+  chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+    _lastVisibleRange[sym] = chart.timeScale().getVisibleLogicalRange();
+  });
+  wrap.addEventListener('wheel', () => { _userScrolled[sym] = true; }, {passive:true});
+  wrap.addEventListener('mousedown', () => { _userScrolled[sym] = true; });
+
+  const candles  = chart.addCandlestickSeries({
+    upColor:'#00e676', downColor:'#ff1744',
+    borderUpColor:'#00e676', borderDownColor:'#ff1744',
+    wickUpColor:'#00e676', wickDownColor:'#ff1744',
+  });
+  const ema20Line = chart.addLineSeries({color:'#40c4ff', lineWidth:1, priceLineVisible:false, lastValueVisible:false});
+  const entryLine = chart.addLineSeries({color:'rgba(64,196,255,.7)', lineWidth:1, lineStyle:2, priceLineVisible:false, lastValueVisible:false});
+  const slLine    = chart.addLineSeries({color:'rgba(255,23,68,.7)',  lineWidth:1, lineStyle:2, priceLineVisible:false, lastValueVisible:false});
+  const tp1Line   = chart.addLineSeries({color:'rgba(0,230,118,.7)',  lineWidth:1, lineStyle:3, priceLineVisible:false, lastValueVisible:false});
+  const tp2Line   = chart.addLineSeries({color:'rgba(0,200,100,.5)',  lineWidth:1, lineStyle:3, priceLineVisible:false, lastValueVisible:false});
+
+  chartMap[sym] = {chart, candles, ema20Line, entryLine, slLine, tp1Line, tp2Line, userLines:[]};
+
+  wrap.addEventListener('click', e => onChartClick(e, wrap));
+
+  new ResizeObserver(() => {
+    const W = wrap.clientWidth || wrap.offsetWidth;
+    const H = wrap.clientHeight || wrap.offsetHeight;
+    if (W > 0 && H > 0) chart.resize(W, H);
+  }).observe(wrap);
+
+  // FIX : resize d'abord, PUIS charger les données — sinon le graphique reste vide
+  setTimeout(() => {
+    const W = wrap.clientWidth || wrap.offsetWidth;
+    const H = wrap.clientHeight || wrap.offsetHeight;
+    if (W > 0 && H > 0) chart.resize(W, H);
+    // Chargement des bougies après que le chart soit correctement dimensionné
+    if (sym === activeSym) {
+      if (activeTF !== '30s') {
+        loadTFData(sym, activeTF);
+      } else if (sigState[sym]?.candles) {
+        // 30s : appliquer le signal existant s'il y en a un
+        applySignal(sym, sigState[sym]);
+      }
+    }
+  }, 120);
+}
+
+// =============================================
+// APPLY SIGNAL
+// =============================================
+function applySignal(sym, sig) {
+  if (sym !== activeSym) return;
+  const c = chartMap[sym];
+  if (!c) return;
+
+  // Hide waiting spinner
+  document.getElementById('waiting')?.remove();
+
+  // ── Candles avec surlignage jaune Trix Strict ─────────────────────────────
+  if (sig.candles?.length > 0) {
+    const strictSet = new Set(sig.strict_entry_ts || []);
+    const revSet = new Set(sig.reversal_ts || []);
+    const coloredCandles = sig.candles.map(cd => {
+      if (strictSet.has(cd.time) || revSet.has(cd.time)) {
+        // Bougie Trix Strict → contour jaune + corps semi-transparent jaune
+        const isRev = revSet.has(cd.time);
+        return {
+          ...cd,
+          color:       isRev ? 'rgba(255,235,59,0.55)' : 'rgba(240,180,41,0.55)',
+          borderColor: isRev ? '#ffeb3b' : '#f0b429',
+          wickColor:   isRev ? '#ffeb3b' : '#f0b429',
+        };
+      }
+      const bull = cd.close >= cd.open;
+      return {
+        ...cd,
+        color:       bull ? '#00e676' : '#ff1744',
+        borderColor: bull ? '#00e676' : '#ff1744',
+        wickColor:   bull ? '#00e676' : '#ff1744',
+      };
+    });
+    try { c.candles.setData(coloredCandles); } catch(e){}
+
+    // Restaurer la vue si l'utilisateur a scrollé manuellement
+    if (_userScrolled[sym] && _lastVisibleRange[sym]) {
+      try { c.chart.timeScale().setVisibleLogicalRange(_lastVisibleRange[sym]); } catch(e){}
+    } else {
+      // Sinon, rester sur les dernières bougies
+      try { c.chart.timeScale().scrollToRealTime(); } catch(e){}
+    }
+  }
+
+  // EMA20
+  if (sig.ema20?.length > 0) {
+    try { c.ema20Line.setData(sig.ema20); } catch(e){}
+  }
+
+  // Level lines — étendues sur 24h dans le futur pour rester stables
+  const tNow = Math.floor(Date.now()/1000);
+  const t0   = sig.candles?.length > 0 ? sig.candles[0].time : tNow - 86400*7;
+  const t1   = tNow + 3600*24;
+
+  function setLine(series, val) {
+    if (!val || !isFinite(val)) return;
+    try { series.setData([{time:t0, value:val},{time:t1, value:val}]); } catch(e){}
+  }
+  setLine(c.entryLine, sig.entry);
+  setLine(c.slLine,    sig.sl);
+  if (sig.tps?.length >= 1) setLine(c.tp1Line, sig.tps[0]);
+  if (sig.tps?.length >= 2) setLine(c.tp2Line, sig.tps[1]);
+
+  // Sidebar levels
+  document.getElementById('lv-e').textContent  = fmt(sig.entry);
+  document.getElementById('lv-s').textContent  = fmt(sig.sl);
+  document.getElementById('lv-t1').textContent = fmt(sig.tps?.[0]);
+  document.getElementById('lv-t2').textContent = fmt(sig.tps?.[1]);
+  document.getElementById('lv-t3').textContent = fmt(sig.tps?.[2]);
+  document.getElementById('lv-t4').textContent = fmt(sig.tps?.[3]);
+
+  // Score ring — /7
+  const score    = sig.score || 0;
+  const scoreMax = sig.score_max || 7;
+  const arc   = document.getElementById('rarc');
+  const circ  = 138.2;
+  arc.style.strokeDashoffset = circ * (1 - score / scoreMax);
+  const col = score >= 7 ? '#00ff8c' : score >= 6 ? '#00e676' : score >= 5 ? '#7fff7f'
+            : score >= 4 ? '#f0b429' : score >= 3 ? '#40c4ff' : '#5a6070';
+  arc.style.stroke = col;
+  document.getElementById('rval').textContent = score;
+  document.getElementById('rval').style.color = col;
+
+  // Label qualité
+  const qualityLabels = {4:'Surveillance',5:'Bon setup',6:'Setup fort',7:'Setup optimal'};
+  const qEl = document.getElementById('score-quality');
+  if (qEl) { qEl.textContent = qualityLabels[score] || ''; qEl.style.color = col; }
+
+  const isLong = sig.side?.includes('ACHAT');
+  const sideEl = document.getElementById('rside');
+  sideEl.textContent = isLong ? 'LONG ▲' : (sig.side ? 'SHORT ▼' : '—');
+  sideEl.style.color = isLong ? '#00e676' : '#ff1744';
+
+  // ── Chips MTF confluences v4 (/7) ────────────────────────────────────
+  const ALL_CHIPS = [
+    'EMA200(H4)',
+    'STRUCT(H2)', 'STRUCT(H1)', 'ALIGN(H2+H1)',
+    'OB/FVG(30m)[intact]', 'OB/FVG(30m)[tested]', 'OB/FVG(30m)[fvg]', 'OB/FVG(30s)[intact]', 'OB/FVG(30s)[fvg]',
+    'OB/FVG(15m)[intact]', 'OB/FVG(15m)[tested]',
+    'REJET(15m)', 'REJET(30m)', 'MOM+EMA20(30s)',
+    'TRIX(5m)', 'RSI-OK(5m+10m)', 'RSI-OK(1m)',
+    'RANGE(30m)',
+  ];
+  const active = sig.confs || [];
+  // Chips clés toujours affichées (grisées si inactives)
+  const coreChips = ['EMA200(H4)','STRUCT(H2)','STRUCT(H1)','ALIGN(H2+H1)','REJET(15m)','TRIX(5m)'];
+  const visibleChips = ALL_CHIPS.filter(ch => active.some(a => a.startsWith(ch.replace(/\[.*\]/,''))) || coreChips.some(c => ch.startsWith(c)));
+  document.getElementById('chips').innerHTML = visibleChips.map(ch => {
+    const on = active.some(a => a.startsWith(ch.replace(/\[.*\]/,'')));
+    return `<div class="chip ${on?'on':''}">${ch.replace(/\[.*\]/,'')}</div>`;
+  }).join('');
+
+  // ── Structure MTF ─────────────────────────────────────────────────────
+  const structEl = document.getElementById('mtf-struct');
+  if (structEl) {
+    const h2 = sig.struct_h2 || '—';
+    const h1 = sig.struct_h1 || '—';
+    const colH2 = h2==='BULLISH'?'var(--green)':h2==='BEARISH'?'var(--red)':'var(--muted)';
+    const colH1 = h1==='BULLISH'?'var(--green)':h1==='BEARISH'?'var(--red)':'var(--muted)';
+    structEl.innerHTML = `<span style="color:var(--muted);font-size:9px">H2 </span><span style="color:${colH2};font-size:9px;font-weight:700">${h2}</span> <span style="color:var(--muted);font-size:9px">| H1 </span><span style="color:${colH1};font-size:9px;font-weight:700">${h1}</span>`;
+  }
+
+  // ── OB context bar (statut, double confirm, range) ────────────────────
+  const obCtx = sig.ob_context || {};
+  const ctxBar = document.getElementById('ob-context-bar');
+  if (ctxBar) {
+    const bits = [];
+    const st30 = obCtx.ob_status_30m;
+    if (st30 && st30 !== 'none') {
+      const cls = st30 === 'intact' ? 'ob-intact' : st30 === 'tested' ? 'ob-tested' : 'ob-broken';
+      bits.push(`<span class="${cls}">OB 30m: ${st30}</span>`);
+    }
+    if (obCtx.ob_fvg_15m_ok) bits.push('<span class="ob-fvg">OB/FVG 15m ✓</span>');
+    if ((obCtx.ob_quality_30m || 0) >= 1.0 || obCtx.ob_fvg_15m_ok)
+      bits.push('<span class="badge-dblconf">FVG⊂OB</span>');
+    if (obCtx.align_h2_h1) bits.push('<span class="ob-intact">H2+H1 ⟳</span>');
+    if (obCtx.range_30m) bits.push('<span class="badge-range">RANGE 30m</span>');
+    ctxBar.innerHTML = bits.join('');
+  }
+
+  // Double confirm FVG⊂OB — message niveaux
+  const fvgObEl = document.getElementById('fvg-ob-confirm');
+  if (fvgObEl) {
+    const dbl = (obCtx.ob_quality_30m || 0) >= 1.0 || obCtx.ob_fvg_15m_ok;
+    fvgObEl.style.display = dbl ? 'block' : 'none';
+  }
+
+  // ── Zones SMC enrichies (avec statut OB) ─────────────────────────────
+  const fvgs = sig.fvg || [];
+  const obs  = sig.ob  || [];
+  if (fvgs.length === 0 && obs.length === 0) {
+    document.getElementById('zones').innerHTML = '<span style="color:var(--muted);font-size:10px">Aucune zone détectée</span>';
+  } else {
+    const fvgHtml = fvgs.slice(0, 8).map(z => {
+      const cls = z.type === 'bull' ? 'fvg-b' : 'fvg-s';
+      const lbl = z.type === 'bull' ? 'FVG↑' : 'FVG↓';
+      const w   = z.width_pct ? ` <span style="color:var(--muted);font-size:8px">${z.width_pct}%</span>` : '';
+      return `<div class="zrow"><span class="zt ${cls}">${lbl}</span><span>${fmt(z.bot)} → ${fmt(z.top)}${w}</span></div>`;
+    }).join('');
+    const obHtml = obs.map(z => {
+      const cls = z.type === 'bull_ob' ? 'ob-b' : 'ob-s';
+      const lbl = z.type === 'bull_ob' ? 'OB↑' : 'OB↓';
+      const st  = z.status || 'intact';
+      const stCls = st === 'intact' ? 'ob-intact' : st === 'tested' ? 'ob-tested' : 'ob-broken';
+      return `<div class="zrow"><span class="zt ${cls}">${lbl}</span><span>${fmt(z.bot)} → ${fmt(z.top)}</span><span class="${stCls}">${st}</span></div>`;
+    }).join('');
+    document.getElementById('zones').innerHTML = fvgHtml + obHtml;
+  }
+
+
+  // Patterns bougies (UI + markers)
+  try { renderCandlePatterns(sym, sig); } catch(e) {}
+
+  // Bottom bar — score /7
+  const scEl = document.getElementById('sc_' + esc(sym));
+  const prEl = document.getElementById('price_' + esc(sym));
+  if (scEl) {
+    const sMax = sig.score_max || 7;
+    scEl.textContent = `${score}/${sMax}`;
+    // Classe de couleur : clamp à 7 pour les classes CSS
+    const scClass = Math.min(score, 7);
+    scEl.className = `ssc sc${scClass}`;
+  }
+  if (prEl && sig.entry) prEl.textContent = fmt(sig.entry);
+
+  // STRICT panel
+  try { renderStrictBox(sym, sig.strict); } catch(e) {}
+
+  // Les zones SMC sont dessinées séparément — pas de rechargement TF ici
+  // (évite l'oscillation bougies normales ↔ bougies jaunes)
+  renderSMCZones(sym, sig);
+}
+
+
+// =============================================
+// CANDLE PATTERNS (UI + CHART MARKERS)
+// =============================================
+function _patShort(p) {
+  const s = String(p || '');
+  const m = {
+    'ThreeWhiteSoldiers':'3WS', 'ThreeBlackCrows':'3BC',
+    'TweezerTop':'TWZ↓', 'TweezerBottom':'TWZ↑',
+    'PiercingLine':'PRC', 'DarkCloudCover':'DCC',
+    'BullKicker':'KCK↑', 'BearKicker':'KCK↓',
+    'ThreeInsideUp':'3IU', 'ThreeInsideDown':'3ID',
+    'BullEngulfing':'ENG↑', 'BearEngulfing':'ENG↓',
+    'BullMarubozu':'MBZ↑', 'BearMarubozu':'MBZ↓',
+    'MorningStar':'MS', 'EveningStar':'ES',
+    'BullHarami':'HRM↑', 'BearHarami':'HRM↓',
+    'InvHammer':'IHM', 'Hammer':'HAM',
+    'ShootingStar':'SS', 'Doji':'DOJ', 'SpinningTop':'SPN',
+  };
+  for (const [k,v] of Object.entries(m)) if (s.includes(k)) return v;
+  return s.slice(0,4).toUpperCase();
+}
+
+function renderCandlePatterns(sym, sig) {
+  if (!sig) return;
+  const box  = document.getElementById('patbox');
+  const cntEl = document.getElementById('pat-count');
+  const pats = Array.isArray(sig.candle_patterns) ? sig.candle_patterns.slice(-12) : [];
+
+  if (cntEl) cntEl.textContent = pats.length ? `(${pats.length})` : '';
+
+  if (box) {
+    if (!pats.length) {
+      box.innerHTML = '<span style="color:var(--muted);font-size:10px">Aucun pattern récent</span>';
+    } else {
+      box.innerHTML = pats.map(p => {
+        const t    = String(p.type || '').toUpperCase();
+        const col  = t === 'BULL' ? 'var(--green)' : (t === 'BEAR' ? 'var(--red)' : 'var(--muted)');
+        const sigg = String(p.significance || '').toUpperCase();
+        const badge = sigg === 'HIGH'
+          ? '<span style="color:#f0b429;font-weight:800">HIGH</span>'
+          : sigg === 'LOW'
+            ? '<span style="color:var(--muted);font-size:8px">LOW</span>'
+            : '<span style="color:var(--muted)">MED</span>';
+        const label = p.label || p.pattern || '—';
+        const px    = (p.price != null && isFinite(p.price)) ? fmt(p.price) : '—';
+        return `<div class="zrow"><span class="zt" style="background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.12);color:${col}">${_patShort(p.pattern)}</span><span style="color:var(--text);font-size:10px">${label} @ ${px} — ${badge}</span></div>`;
+      }).join('');
+    }
+  }
+
+  if (sym !== activeSym) return;
+  const c = chartMap[sym];
+  if (!c || !c.candles || typeof c.candles.setMarkers !== 'function') return;
+
+  const markers = pats.map(p => {
+    const t  = String(p.type || '').toUpperCase();
+    const tm = (p.time != null) ? Number(p.time) : (p.ts_ms ? Math.floor(Number(p.ts_ms)/1000) : null);
+    if (!tm) return null;
+    const high      = String(p.significance || '').toUpperCase() === 'HIGH';
+    const baseColor = t === 'BULL' ? '#00e676' : t === 'BEAR' ? '#ff1744' : '#40c4ff';
+    const position  = t === 'BULL' ? 'belowBar' : t === 'BEAR' ? 'aboveBar' : 'inBar';
+    const shape     = t === 'BULL' ? 'arrowUp'  : t === 'BEAR' ? 'arrowDown' : 'circle';
+    return { time:tm, position, color: high?'#f0b429':baseColor, shape, text:_patShort(p.pattern), size: high?2:1 };
+  }).filter(Boolean);
+
+  try { c.candles.setMarkers(markers); } catch(e) {}
+}
+
+// =============================================
+// LIVE CANDLE
+// =============================================
+function applyCandle(sym, cd) {
+  const c = chartMap[sym];
+  if (c && activeTF === '30s') {
+    // Mémoriser la vue avant la mise à jour
+    const prevRange = _userScrolled[sym] ? c.chart.timeScale().getVisibleLogicalRange() : null;
+
+    const sig = sigState[sym];
+    const strictSet = new Set((sig && sig.strict_entry_ts) || []);
+    const revSet = new Set((sig && sig.reversal_ts) || []);
+    const isStrict = strictSet.has(cd.time);
+    const isRev = revSet.has(cd.time);
+    const bull = cd.close >= cd.open;
+    const colored = (isStrict || isRev)
+      ? { ...cd, color: isRev ? 'rgba(255,235,59,0.55)' : 'rgba(240,180,41,0.55)', borderColor: isRev ? '#ffeb3b' : '#f0b429', wickColor: isRev ? '#ffeb3b' : '#f0b429' }
+      : { ...cd, color: bull?'#00e676':'#ff1744', borderColor: bull?'#00e676':'#ff1744', wickColor: bull?'#00e676':'#ff1744' };
+    try { c.candles.update(colored); } catch(e){}
+
+    // Restaurer la vue si l'utilisateur a scrollé
+    if (prevRange) {
+      try { c.chart.timeScale().setVisibleLogicalRange(prevRange); } catch(e){}
+    }
+  }
+  // Prix live: màj même si on n'est pas en 30s
+  if (sym === activeSym) {
+    const prEl = document.getElementById('price_' + esc(sym));
+    if (prEl) prEl.textContent = fmt(cd.close);
+  }
+}
+
+// =============================================
+// WEBSOCKET
+// =============================================
+function startWS(sym) {
+  const key = sym.replace('/','_');
+  const proto = (location.protocol === 'https:') ? 'wss' : 'ws';
+  const ws  = new WebSocket(`${proto}://${location.host}/ws/${key}`);
+
+  ws.onopen = () => {
+    document.getElementById('dot').classList.add('live');
+    document.getElementById('ws-status').textContent = 'LIVE';
+    document.getElementById('ws-status').style.color = '#00e676';
+  };
+
+  ws.onmessage = e => {
+    const msg = unpackWsMessage(e.data);
+    if (msg.type === 'signal') {
+      sigState[sym] = msg.data;
+      applySignal(sym, msg.data);
+      const src = msg.data.source === 'claude1439' ? 'BOT' : 'LIVE';
+      addLog(sym, msg.data.score, msg.data.side, msg.data.confs, src);
+      // Flash the chart area on new signal
+      const cw = document.getElementById('chart-wrap');
+      cw.classList.remove('flash'); void cw.offsetWidth; cw.classList.add('flash');
+    } else if (msg.type === 'candle') {
+      applyCandle(sym, msg.data);
+    } else if (msg.type === 'vision_result') {
+      renderVisionResult(msg.data);
+      drawVisionElements(msg.data);
+    } else if (msg.type === 'log') {
+      addRawLog('[BOT] ' + (msg.message || ''));
+    }
+  };
+
+  ws.onclose = () => {
+    document.getElementById('ws-status').textContent = 'RECONNECT';
+    document.getElementById('ws-status').style.color = '#f0b429';
+    setTimeout(() => startWS(sym), 3000);
+  };
+}
+
+// =============================================
+// DRAWING TOOLS
+// =============================================
+function setTool(t) {
+  tool = t;
+  ['none','hline','zone'].forEach(id => {
+    document.getElementById('tool-'+id)?.classList.toggle('on', id===t);
+  });
+  document.getElementById('chart-container').style.cursor = t==='none' ? 'default' : 'crosshair';
+}
+
+function onChartClick(e, wrap) {
+  if (tool === 'none' || !activeSym) return;
+  const c = chartMap[activeSym];
+  if (!c) return;
+  const rect = wrap.getBoundingClientRect();
+  const price = c.chart.priceScale('right').coordinateToPrice(e.clientY - rect.top);
+  if (!price || !isFinite(price)) return;
+  if (tool === 'hline') {
+    const ln = c.chart.addLineSeries({color:'#f0b429', lineWidth:1, lineStyle:2, priceLineVisible:false, lastValueVisible:false});
+    const t0 = Math.floor(Date.now()/1000) - 86400*7;
+    const t1 = Math.floor(Date.now()/1000) + 86400*7;
+    ln.setData([{time:t0,value:price},{time:t1,value:price}]);
+    drawMap[activeSym].push(ln);
+  }
+}
+
+function clearDraw() {
+  if (!activeSym) return;
+  const c = chartMap[activeSym];
+  if (!c) return;
+  (drawMap[activeSym]||[]).forEach(l => { try { c.chart.removeSeries(l); } catch(e){} });
+  drawMap[activeSym] = [];
+}
+
+// =============================================
+// LOG
+// =============================================
+function addLog(sym, score, side, confs, src) {
+  const panel = document.getElementById('log');
+  const ts    = new Date().toTimeString().match(/\d\d:\d\d:\d\d/)[0];
+  const cls   = score >= 4 ? 'le-sig' : 'le-inf';
+  const div   = document.createElement('div');
+  const srcTag = src === 'BOT'
+    ? '<span class="src-badge src-bot">BOT</span>'
+    : '<span class="src-badge src-live">LIVE</span>';
+  div.className = `le ${cls}`;
+  div.innerHTML = `<span class="lts">[${ts}]</span>${srcTag} <b>${sym}</b> ${score}/7 ${side||''} — ${(confs||[]).join(', ')}`;
+  panel.insertBefore(div, panel.firstChild);
+  // Update source badge in header
+  const badge = document.getElementById('src-badge');
+  if (badge && sym === activeSym) {
+    badge.textContent = src === 'BOT' ? 'CLAUDE1439' : 'DASHBOARD';
+    badge.className = 'src-badge ' + (src === 'BOT' ? 'src-bot' : 'src-live');
+  }
+  while (panel.children.length > 60) panel.removeChild(panel.lastChild);
+}
+
+function addRawLog(txt) {
+  const panel = document.getElementById('log');
+  const div = document.createElement('div');
+  div.className = 'le le-inf';
+  div.innerHTML = `<span class="lts src-badge src-bot" style="padding:1px 4px">BOT</span> ${txt}`;
+  panel.insertBefore(div, panel.firstChild);
+  while (panel.children.length > 60) panel.removeChild(panel.lastChild);
+}
+
+function log(txt, type='inf') {
+  const panel = document.getElementById('log');
+  const div = document.createElement('div');
+  div.className = `le le-${type}`;
+  div.innerHTML = `<span class="lts">[SYS]</span> ${txt}`;
+  panel.insertBefore(div, panel.firstChild);
+}
+
+// =============================================
+// UTIL
+// =============================================
+function esc(s) { return s.replace('/','_').replace(' ','_'); }
+function fmt(v) {
+  if (v === undefined || v === null || !isFinite(v)) return '—';
+  const n = Number(v);
+  return n > 1000 ? n.toFixed(2) : n > 10 ? n.toFixed(4) : n.toFixed(6);
+}
+
+// =============================================
+// STRICT (TRIX 5m) — UI + HEATMAP
+
+// =============================================
+// STRICT STATUS (recalibrage): polling + timer
+// =============================================
+const strictStatusCache = {}; // {sym:{data, ts}}
+let strictStatusLastTs = 0;
+
+function _ago(tsMs) {
+  if (!tsMs) return '—';
+  const s = Math.max(0, Math.floor((Date.now() - tsMs) / 1000));
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return m + 'm' + (r < 10 ? '0' : '') + r + 's';
+}
+
+async function fetchStrictStatus(sym) {
+  const key = _symPath(sym);
+  const r = await fetch('/api/strict/status/' + key);
+  if (!r.ok) throw new Error('status http ' + r.status);
+  return await r.json();
+}
+
+
+async function strictRecalibrate(sym) {
+  try {
+    const key = _symPath(sym);
+    // Optimiste: marque l'état comme en file immédiatement
+    strictStatusCache[sym] = { data: {symbol:sym, pending:true, running:true, has_heatmap:false, strict:{status:'queued'}}, ts: Date.now() };
+    strictStatusLastTs = Date.now();
+    renderStrictStatusBoard();
+
+    const r = await fetch('/api/strict/recalibrate/' + key, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({background:true})
+    });
+    const data = await r.json().catch(_=>({}));
+    // Rafraîchit le status réel
+    await refreshStrictStatusAll();
+
+    // Petit log UI
+    addRawLog('[STRICT] Recalibrage demandé: ' + sym + (data && data.ok ? ' (OK)' : ''));
+  } catch(e) {
+    addRawLog('[STRICT] Erreur recalibrage: ' + sym + ' — ' + e);
+  }
+}
+
+
+// =============================================
+// STRICT: Recalibrer tout + Modal + Historique
+// =============================================
+let strictModalTab = 'live';
+const STRICT_UI_LOG_MAX = 400;
+const strictUiLogs = {}; // {sym:[{ts,msg}]}
+const strictJobStartMs = {}; // {job_id: ms}
+const strictJobDone = {}; // {job_id:true} anti-doublons
+
+function _pushStrictUiLog(sym, msg) {
+  const t = new Date().toISOString();
+  strictUiLogs[sym] = strictUiLogs[sym] || [];
+  strictUiLogs[sym].unshift({ts: t, msg});
+  if (strictUiLogs[sym].length > STRICT_UI_LOG_MAX) strictUiLogs[sym].length = STRICT_UI_LOG_MAX;
+}
+
+async function strictRecalibrateAll() {
+  if (!SYMBOLS || SYMBOLS.length === 0) return;
+  addRawLog('[STRICT] Recalibrage demandé pour tous les symboles…');
+  for (const sym of SYMBOLS) {
+    // petite pause pour éviter un burst réseau
+    await strictRecalibrate(sym);
+    await new Promise(r => setTimeout(r, 150));
+  }
+}
+
+function openStrictModal() {
+  try { if (!strictChartMode) strictChartMode = 'history'; } catch(e) {}
+  const el = document.getElementById('strict-modal');
+  if (!el) return;
+  el.classList.add('show');
+  switchStrictTab('live');
+  renderStrictModal();
+}
+
+function closeStrictModal() {
+  document.getElementById('strict-modal')?.classList.remove('show');
+}
+
+function switchStrictTab(tab) {
+  strictModalTab = tab;
+  document.getElementById('strict-modal-live').style.display = (tab === 'live') ? 'flex' : 'none';
+  document.getElementById('strict-modal-history').style.display = (tab === 'history') ? 'flex' : 'none';
+  document.getElementById('strict-tab-live').classList.toggle('on', tab === 'live');
+  document.getElementById('strict-tab-history').classList.toggle('on', tab === 'history');
+  renderStrictModal();
+}
+
+function _fmtDur(val, isSeconds) {
+  // Accepte ms (défaut) ou secondes si isSeconds=true
+  if (val == null || val < 0) return '—';
+  const s = isSeconds ? Math.floor(Number(val)) : Math.floor(Number(val) / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m < 60) return m + 'm' + String(r).padStart(2, '0') + 's';
+  const h = Math.floor(m / 60);
+  return h + 'h' + String(m % 60).padStart(2, '0') + 'm';
+}
+
+function loadStrictHistory() {
+  try {
+    const raw = localStorage.getItem('strict_recal_history') || '[]';
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch(e) { return []; }
+}
+
+function saveStrictHistory(arr) {
+  try { localStorage.setItem('strict_recal_history', JSON.stringify(arr.slice(0, 400))); } catch(e) {}
+}
+
+function appendStrictHistory(row) {
+  const arr = loadStrictHistory();
+  arr.unshift(row);
+  saveStrictHistory(arr);
+  // Si la modal est ouverte sur Historique, refresh le chart
+  try { renderStrictZonesChart(); } catch(e) {}
+}
+
+function clearStrictHistory() {
+  saveStrictHistory([]);
+  renderStrictHistory();
+  addRawLog('[STRICT] Historique vidé.');
+}
+
+function exportStrictHistory() {
+  const arr = loadStrictHistory();
+  const blob = new Blob([JSON.stringify(arr, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'strict_recal_history.json';
+  a.click();
+}
+
+
+// ---------------------------------------------
+// Chart.js — Évolution du nombre de zones robustes
+// ---------------------------------------------
+let strictZonesChart = null;
+
+// Chart mode: 'history' (localStorage) or 'live' (polling status)
+let strictChartMode = 'history';
+const strictLiveSeries = {}; // {sym:[{ts:ms, zones:number|null}]}
+const STRICT_LIVE_MAX_POINTS = 180; // ~15 min at 5s
+
+function setStrictChartMode(mode) {
+  strictChartMode = (mode === 'live') ? 'live' : 'history';
+  document.getElementById('strict-chart-live')?.classList.toggle('on', strictChartMode === 'live');
+  document.getElementById('strict-chart-history')?.classList.toggle('on', strictChartMode === 'history');
+  const hint = document.getElementById('strict-chart-hint');
+  if (hint) {
+    hint.textContent = (strictChartMode === 'live')
+      ? 'MAJ toutes les 5s via /api/strict/status/* (valeur = dernière zones_count connue)'
+      : 'Basé sur l’historique des jobs terminés (localStorage)';
+  }
+  try { renderStrictZonesChart(); } catch(e) {}
+}
+
+function _pushLiveZones(sym, st) {
+  if (!sym) return;
+  strictLiveSeries[sym] = strictLiveSeries[sym] || [];
+
+  const strict = (st && st.strict) ? st.strict : {};
+  let z = null;
+  if (Array.isArray(strict.zones)) z = strict.zones.length;
+  else if (strict.zones_count !== undefined && strict.zones_count !== null) z = Number(strict.zones_count);
+
+  // Si z est null pendant CALCUL/EN FILE, on conserve la dernière valeur connue pour la continuité.
+  if (z === null && strictLiveSeries[sym].length > 0) {
+    const last = strictLiveSeries[sym][strictLiveSeries[sym].length - 1];
+    if (last && last.zones !== null && last.zones !== undefined) z = last.zones;
+  }
+
+  strictLiveSeries[sym].push({ ts: Date.now(), zones: (isFinite(z) ? z : null) });
+  if (strictLiveSeries[sym].length > STRICT_LIVE_MAX_POINTS) {
+    strictLiveSeries[sym] = strictLiveSeries[sym].slice(-STRICT_LIVE_MAX_POINTS);
+  }
+}
+
+function renderStrictZonesChartHistory() {
+  if (strictChartMode === 'live') return renderStrictZonesChartLive();
+  return renderStrictZonesChartHistory();
+}
+
+
+
+function _shortTs(iso) {
+  if (!iso) return '—';
+  // "2026-03-08T09:40:12.123Z" -> "03-08 09:40:12"
+  try {
+    const d = new Date(iso);
+    const mm = String(d.getMonth()+1).padStart(2,'0');
+    const dd = String(d.getDate()).padStart(2,'0');
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mi = String(d.getMinutes()).padStart(2,'0');
+    const ss = String(d.getSeconds()).padStart(2,'0');
+    return `${mm}-${dd} ${hh}:${mi}:${ss}`;
+  } catch(e) { return String(iso).slice(0,19); }
+}
+
+function renderStrictZonesChartHistory() {
+  const canvas = document.getElementById('strict-zones-chart');
+  if (!canvas) return;
+
+  if (typeof Chart === 'undefined') {
+    // Chart.js non chargé (CDN bloqué)
+    return;
+  }
+
+  const hist = loadStrictHistory();
+  // On ne prend que les entrées OK (recalibrage terminé) et zones numériques
+  const rows = (hist || []).filter(r => (r && r.sym && r.ts && r.status === 'ok' && r.zones !== null && r.zones !== undefined));
+  // Trie ascendant pour l'axe du temps
+  rows.sort((a,b) => String(a.ts).localeCompare(String(b.ts)));
+
+  // Labels = timestamps uniques
+  const labels = [];
+  const labelSet = new Set();
+  for (const r of rows) {
+    const lab = _shortTs(r.ts);
+    if (!labelSet.has(lab)) { labelSet.add(lab); labels.push(lab); }
+  }
+
+  const syms = (SYMBOLS && SYMBOLS.length) ? SYMBOLS.slice() : ['BTC/USDT','ETH/USDT','SOL/USDT','PAXG/USDT'];
+  const colors = {
+    'BTC/USDT': '#f0b429',
+    'ETH/USDT': '#7c9cff',
+    'SOL/USDT': '#00e676',
+    'PAXG/USDT': '#ff4d6d'
+  };
+
+  // Build map: sym -> label -> zones
+  const map = { };
+  for (const s of syms) map[s] = {};
+  for (const r of rows) {
+    const s = r.sym;
+    const lab = _shortTs(r.ts);
+    if (!map[s]) map[s] = {};
+    const z = Number(r.zones);
+    if (isFinite(z)) map[s][lab] = z;
+  }
+
+  const datasets = syms.map(sym => {
+    const data = labels.map(lab => (map[sym] && map[sym][lab] !== undefined) ? map[sym][lab] : null);
+    return {
+      label: sym,
+      data,
+      borderColor: colors[sym] || 'rgba(240,180,41,.9)',
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      tension: 0.25,
+      spanGaps: true,
+      pointRadius: 2,
+      pointHoverRadius: 4,
+    };
+  });
+
+  const cfg = {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#cfd8dc', boxWidth: 10, boxHeight: 10 } },
+        tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y ?? '—'}` } }
+      },
+      scales: {
+        x: { ticks: { color: '#9aa4b2', maxRotation: 0, autoSkip: true, maxTicksLimit: 6 }, grid: { color: 'rgba(255,255,255,.04)' } },
+        y: { ticks: { color: '#9aa4b2', precision: 0 }, grid: { color: 'rgba(255,255,255,.04)' }, title: { display: true, text: 'Zones robustes', color: '#9aa4b2' }, beginAtZero: true }
+      }
+    }
+  };
+
+  // Destroy old chart if exists
+  try { if (strictZonesChart) strictZonesChart.destroy(); } catch(e) {}
+  const ctx = canvas.getContext('2d');
+  strictZonesChart = new Chart(ctx, cfg);
+}
+
+
+function renderStrictZonesChartLive() {
+  const canvas = document.getElementById('strict-zones-chart');
+  if (!canvas) return;
+  if (typeof Chart === 'undefined') return;
+
+  const syms = (SYMBOLS && SYMBOLS.length) ? SYMBOLS.slice() : ['BTC/USDT','ETH/USDT','SOL/USDT','PAXG/USDT'];
+
+  // Build labels from the longest series
+  let maxLen = 0;
+  for (const s of syms) {
+    const arr = strictLiveSeries[s] || [];
+    if (arr.length > maxLen) maxLen = arr.length;
+  }
+  if (maxLen < 2) {
+    // pas assez de points
+    try { if (strictZonesChart) strictZonesChart.destroy(); } catch(e) {}
+    return;
+  }
+
+  // Use timestamps from the first symbol that has data
+  let base = null;
+  for (const s of syms) { if ((strictLiveSeries[s]||[]).length) { base = strictLiveSeries[s]; break; } }
+  if (!base) return;
+
+  const labels = base.map(p => {
+    const d = new Date(p.ts);
+    return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0');
+  });
+
+  const colors = {
+    'BTC/USDT': '#f0b429',
+    'ETH/USDT': '#7c9cff',
+    'SOL/USDT': '#00e676',
+    'PAXG/USDT': '#ff4d6d'
+  };
+
+  const datasets = syms.map(sym => {
+    const arr = strictLiveSeries[sym] || [];
+    // align by length: pad left with null
+    const pad = Math.max(0, labels.length - arr.length);
+    const data = new Array(pad).fill(null).concat(arr.map(x => (x.zones === null ? null : Number(x.zones))));
+    return {
+      label: sym,
+      data,
+      borderColor: colors[sym] || 'rgba(240,180,41,.9)',
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      tension: 0.25,
+      spanGaps: true,
+      pointRadius: 0,
+    };
+  });
+
+  const cfg = {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#cfd8dc', boxWidth: 10, boxHeight: 10 } },
+        tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${ctx.parsed.y ?? '—'}` } }
+      },
+      scales: {
+        x: { ticks: { color: '#9aa4b2', maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { color: 'rgba(255,255,255,.04)' } },
+        y: { ticks: { color: '#9aa4b2', precision: 0 }, grid: { color: 'rgba(255,255,255,.04)' }, title: { display: true, text: 'Zones robustes (live)', color: '#9aa4b2' }, beginAtZero: true }
+      }
+    }
+  };
+
+  try { if (strictZonesChart) strictZonesChart.destroy(); } catch(e) {}
+  strictZonesChart = new Chart(canvas.getContext('2d'), cfg);
+}
+
+function renderStrictHistory() {
+  const tbody = document.querySelector('#strict-history-table tbody');
+  if (!tbody) return;
+  const arr = loadStrictHistory();
+  tbody.innerHTML = arr.length ? arr.map(r => {
+    const st    = r.status || '';
+    const cls   = st === 'ok' ? 'ok' : st === 'error' ? 'err' : '';
+    const errTxt = r.error ? `<span style="color:#ff8a8a;font-size:9px" title="${r.error}">${String(r.error).slice(0,22)}</span>` : '—';
+    const tsShort = r.ts ? _shortTs(r.ts) : '—';
+    return `
+      <tr>
+        <td style="font-size:9px;color:var(--muted)">${tsShort}</td>
+        <td><b>${r.sym || '—'}</b></td>
+        <td>${r.duration || '—'}</td>
+        <td>${r.zones ?? '—'}</td>
+        <td>${r.sharpe ?? '—'}</td>
+        <td style="font-size:9px;color:var(--muted)">${r.job_id ? String(r.job_id).slice(0,8) : '—'}</td>
+        <td><span class="strict-badge ${cls}">${st || '—'}</span></td>
+        <td>${errTxt}</td>
+      </tr>`;
+  }).join('') : `<tr><td colspan="8" class="strict-muted">Aucun recalibrage enregistré.</td></tr>`;
+}
+
+function renderStrictModal() {
+  const isOpen = document.getElementById('strict-modal')?.classList.contains('show');
+  if (!isOpen) return;
+  if (strictModalTab === 'history') { renderStrictHistory(); setTimeout(renderStrictZonesChart, 0); return; }
+
+  // LIVE
+  const kv = document.getElementById('strict-live-kv');
+  const logs = document.getElementById('strict-live-logs');
+  if (!kv || !logs) return;
+
+  const rows = (SYMBOLS || []).map(sym => {
+    const c = strictStatusCache[sym];
+    const st = c ? c.data : null;
+    const strict = st?.strict || {};
+    const job = st?.job_id || strict?.job_id || '';
+    const b = _statusBadge(st);
+    const zones = (Array.isArray(strict?.zones) ? strict.zones.length : (strict?.zones_count ?? null));
+    const sharpe = (strict && strict.sharpe != null) ? Number(strict.sharpe).toFixed(2) : '—';
+    const trained = strict?.trained_until || '—';
+    return `
+      <div class="k">${sym}</div><div class="v"><span class="strict-badge ${b.cls}">${b.txt}</span> job=${job ? String(job).slice(0,8) : '—'} | zones=${zones ?? '—'} | sharpe=${sharpe} | trained=${trained}</div>`;
+  }).join('');
+
+  kv.innerHTML = rows || '<div class="strict-muted">En attente des symboles…</div>';
+
+  // logs: concat par symbole
+  const logLines = (SYMBOLS || []).map(sym => {
+    const arr = strictUiLogs[sym] || [];
+    const head = '=== ' + sym + ' ===';
+    const body = arr.slice(0, 25).map(x => '[' + x.ts.slice(11,19) + '] ' + x.msg).join('\n');
+    return head + (body ? ('\n' + body) : '\n(aucun log)');
+  }).join('\n\n');
+
+  logs.textContent = logLines;
+}
+
+// Rerender modal periodically when open
+setInterval(() => { renderStrictModal(); }, 1000);
+function _statusBadge(st) {
+  const strict = (st && st.strict) ? st.strict : {};
+  if (strict && strict.error) return {cls: 'err', txt: 'ERREUR'};
+  if (st && st.has_heatmap) return {cls: 'ok', txt: 'OK'};
+  if (st && (st.running || st.pending)) return {cls: 'run', txt: (st.pending ? 'EN FILE' : 'CALCUL')};
+  if (strict && strict.status === 'queued') return {cls: 'run', txt: 'EN FILE'};
+  return {cls: 'wait', txt: 'EN ATTENTE'};
+}
+
+function renderStrictStatusBoard() {
+  const board = document.getElementById('strict-status-board');
+  if (!board) return;
+
+  const rows = (SYMBOLS || []).map(sym => {
+    const c = strictStatusCache[sym];
+    const st = c ? c.data : null;
+    const b = _statusBadge(st);
+    const age = c ? _ago(c.ts) : '—';
+    const extra = (st && st.job_id) ? ('job ' + String(st.job_id).slice(0, 8)) : '';
+    const hm = (st && st.has_heatmap) ? 'heatmap' : '';
+    const strict = (st && st.strict) ? st.strict : {};
+    const zc = Array.isArray(strict.zones) ? strict.zones.length : (strict.zones_count ?? null);
+
+    const errDetail = (strict && strict.error) ? strict.error : (st && st.error ? st.error : '');
+    return `
+      <div class="strict-srow">
+        <div class="strict-sym">${sym}</div>
+        <div class="strict-badges">
+          <span class="strict-badge ${b.cls}">${b.txt}</span>
+          ${hm ? `<span class="strict-badge ok">${hm}</span>` : ''}
+          ${errDetail ? `<span class="strict-badge err" title="${errDetail}" style="max-width:100px;overflow:hidden;text-overflow:ellipsis">${errDetail.slice(0,20)}</span>` : ''}
+          ${(zc !== null && zc !== undefined) ? `<span class="strict-badge ok">zones ${zc}</span>` : ''}
+          <button class="strict-recal-btn" onclick="strictRecalibrate('${sym}')" ${(st && (st.running || st.pending)) ? "disabled" : ""}>Recalibrer</button>
+          <span class="strict-age">MAJ ${age}</span>
+        </div>
+      </div>`;
+  }).join('');
+
+  board.innerHTML = rows || `<div style="color:var(--muted);font-size:10px">En attente des symboles…</div>`;
+
+  const last = document.getElementById('strict-status-last');
+  if (last) last.textContent = 'MAJ: ' + _ago(strictStatusLastTs);
+}
+
+async function refreshStrictStatusAll() {
+  if (!SYMBOLS || SYMBOLS.length === 0) return;
+  try {
+    const jobs = SYMBOLS.map(sym =>
+      fetchStrictStatus(sym)
+        .then(data => {
+        const prev = strictStatusCache[sym] ? strictStatusCache[sym].data : null;
+        strictStatusCache[sym] = { data, ts: Date.now() };
+        try { _pushLiveZones(sym, data); } catch(e) {}
+        try {
+          const b0 = _statusBadge(prev);
+          const b1 = _statusBadge(data);
+          if (!prev || (b0.txt !== b1.txt) || (prev.has_heatmap !== data.has_heatmap)) {
+            _pushStrictUiLog(sym, `status: ${b0.txt || '—'} -> ${b1.txt || '—'} | heatmap=${!!data.has_heatmap}`);
+          }
+          const job = (data && data.job_id) ? data.job_id : '';
+
+          // FIX v4.1 : utiliser started_at du serveur (champ updated_at ou started_at)
+          // pour éviter les durées aberrantes dues au polling côté client.
+          if (job && !strictJobStartMs[job]) {
+            const strict = data && data.strict ? data.strict : {};
+            // Essayer d'abord started_at côté serveur (ISO string)
+            const serverTs = strict.started_at || data.started_at || null;
+            if (serverTs) {
+              const d = new Date(serverTs);
+              if (!isNaN(d.getTime())) {
+                strictJobStartMs[job] = d.getTime();
+              }
+            }
+            // Fallback: marquer quand on voit le job en cours pour la première fois
+            if (!strictJobStartMs[job] && (data.pending || data.running)) {
+              strictJobStartMs[job] = Date.now();
+            }
+          }
+
+          // completion => history row
+          const strict = data && data.strict ? data.strict : {};
+          const statusOk  = (data.has_heatmap === true) && (!strict.error);
+          const statusErr = !!(strict && strict.error);
+          if ((statusOk || statusErr) && job && !strictJobDone[job]) {
+            strictJobDone[job] = true;
+            // Durée : préférer duration_s du serveur si disponible
+            let durMs = null;
+            if (typeof data.duration_s === 'number' && data.duration_s >= 0) {
+              durMs = data.duration_s * 1000;
+            } else if (strictJobStartMs[job]) {
+              durMs = Date.now() - strictJobStartMs[job];
+              // Sanity check : durée max 4h (sinon le timestamp de départ est faux)
+              if (durMs > 4 * 3600 * 1000) durMs = null;
+            }
+            const zones  = Array.isArray(strict.zones) ? strict.zones.length : (strict.zones_count ?? null);
+            const sharpe = (strict.sharpe != null) ? Number(strict.sharpe).toFixed(2) : null;
+            appendStrictHistory({
+              ts:       new Date().toISOString(),
+              sym:      sym,
+              job_id:   job,
+              duration: durMs != null ? _fmtDur(durMs) : '—',
+              zones,
+              sharpe,
+              status: statusOk ? 'ok' : 'error',
+              error:  statusErr ? (strict.error || 'error') : null,
+            });
+            strictJobStartMs[job] = null;
+          }
+        } catch(e) {}
+        })
+        .catch(_ => {})
+    );
+    await Promise.all(jobs);
+    strictStatusLastTs = Date.now();
+    renderStrictStatusBoard();
+
+    if (activeSym) {
+      try { renderStrictBox(activeSym, (sigState[activeSym] || {}).strict); } catch(e) {}
+    }
+
+  } catch (e) {}
+}
+
+// Timer UI (sans requêtes): met à jour "MAJ Xs"
+setInterval(() => {
+  renderStrictStatusBoard();
+}, 1000);
+
+// =============================================
+const strictHMCache = {};  // {sym: {ts, data}}
+
+function _symPath(sym){ return (sym||'').replace('/','_'); }
+
+async function fetchStrictHeatmap(sym) {
+  const key = _symPath(sym);
+  try {
+    const r = await fetch(`/api/strict/heatmap/${key}`);
+    const d = await r.json();
+    if (d && d.x && d.y && d.score_smoothed) {
+      strictHMCache[sym] = { ts: Date.now(), data: d };
+      return d;
+    }
+  } catch(e) {}
+  return null;
+}
+
+function _heatColor(v, vmin, vmax) {
+  // gradient: red -> amber -> green
+  const t = Math.max(0, Math.min(1, (v - vmin) / (vmax - vmin + 1e-9)));
+  const r = t < 0.5 ? 255 : Math.round(255 - (t-0.5)*2*255);
+  const g = t < 0.5 ? Math.round(t*2*180) : Math.round(180 + (t-0.5)*2*75);
+  const b = 40;
+  return `rgb(${r},${g},${b})`;
+}
+
+function drawStrictHeatmap(canvas, hm) {
+  if (!canvas || !hm || !hm.score_smoothed) return;
+  const ctx = canvas.getContext('2d');
+  const grid = hm.score_smoothed; // int = score*100, -9999 for empty
+  const H = grid.length;
+  const W = grid[0]?.length || 0;
+  if (!H || !W) return;
+
+  // determine value range from existing cells
+  let vals = [];
+  for (let i=0;i<H;i++) for (let j=0;j<W;j++) {
+    const v = grid[i][j];
+    if (v !== -9999) vals.push(v);
+  }
+  if (vals.length === 0) return;
+  vals.sort((a,b)=>a-b);
+  const vmin = vals[Math.floor(vals.length*0.10)];
+  const vmax = vals[Math.floor(vals.length*0.95)];
+
+  const cw = canvas.width;
+  const ch = canvas.height;
+  const px = cw / W;
+  const py = ch / H;
+
+  ctx.clearRect(0,0,cw,ch);
+  for (let i=0;i<H;i++) {
+    for (let j=0;j<W;j++) {
+      const v = grid[i][j];
+      if (v === -9999) {
+        ctx.fillStyle = 'rgba(255,255,255,0.03)';
+      } else {
+        ctx.fillStyle = _heatColor(v, vmin, vmax);
+      }
+      ctx.fillRect(j*px, i*py, Math.ceil(px), Math.ceil(py));
+    }
+  }
+
+  // overlay top zones
+  const top = hm.top || [];
+  if (top.length) {
+    ctx.strokeStyle = 'rgba(240,180,41,0.95)';
+    ctx.lineWidth = 2;
+    // convert (trix_len, signal_len) to indices using hm.x/hm.y
+    const xi = new Map(hm.x.map((v,idx)=>[v,idx]));
+    const yj = new Map(hm.y.map((v,idx)=>[v,idx]));
+    top.forEach((z, k) => {
+      const i = xi.get(z.trix_len);
+      const j = yj.get(z.signal_len);
+      if (i==null || j==null) return;
+      ctx.strokeRect(j*px+1, i*py+1, px-2, py-2);
+      // little rank dot
+      ctx.fillStyle = 'rgba(8,9,13,0.85)';
+      ctx.fillRect(j*px+2, i*py+2, 12, 10);
+      ctx.fillStyle = 'rgba(240,180,41,1)';
+      ctx.font = '9px JetBrains Mono';
+      ctx.fillText(String(k+1), j*px+4, i*py+10);
+    });
+  }
+}
+
+function renderStrictBox(sym, strict) {
+  const box = document.getElementById('strict-box');
+  if (!box) return;
+
+  // Toujours afficher: si pas prêt, on montre l'état (queued / calcul / attente).
+  box.style.display = 'block';
+
+
+  // heatmap link
+  const link = document.getElementById('strict-heatmap-link');
+  if (link) link.href = `/api/strict/heatmap/${_symPath(sym)}`;
+
+
+  // Si strict n'est pas encore disponible, affiche un état basé sur /api/strict/status
+  if (!strict || strict.error) {
+    const st = (strictStatusCache[sym] && strictStatusCache[sym].data) ? strictStatusCache[sym].data : null;
+    const b = _statusBadge(st);
+    const pill = document.getElementById('strict-pill');
+    if (pill) {
+      pill.textContent = b.txt;
+      pill.className = 'strict-pill ' + (b.cls === 'ok' ? 'ok' : b.cls === 'err' ? 'no' : '');
+    }
+    document.getElementById('strict-sharpe').textContent = '—';
+    document.getElementById('strict-hist').textContent = '—';
+    document.getElementById('strict-trend').textContent = '—';
+    document.getElementById('strict-flags').textContent = 'En attente (recalibrage)';
+    document.getElementById('strict-params').textContent = '—';
+    const zonesEl = document.getElementById('strict-zones');
+    if (zonesEl) {
+      if (b.cls === 'run') zonesEl.innerHTML = 'Heatmap: <b>calcul en cours</b>…';
+      else zonesEl.innerHTML = 'Heatmap: <b>non disponible</b> (lance /api/strict/recalibrate si besoin)';
+    }
+    return;
+  }
+
+  const pill = document.getElementById('strict-pill');
+  const inTrend = !!strict.in_trend;
+  if (pill) {
+    pill.textContent = inTrend ? 'TREND OK' : 'TREND OFF';
+    pill.className = 'strict-pill ' + (inTrend ? 'ok' : 'no');
+  }
+
+  const p = strict.params || {};
+  const sharpe = Number(strict.sharpe || 0).toFixed(2);
+  const hist = Number(strict.hist || 0).toFixed(4);
+  const trades = strict.trades ?? 0;
+
+  document.getElementById('strict-sharpe').textContent = `${sharpe} (t=${trades})`;
+  document.getElementById('strict-hist').textContent = hist;
+  document.getElementById('strict-trend').textContent = inTrend ? 'AU-DESSUS MA' : 'SOUS MA';
+  document.getElementById('strict-flags').textContent = `${strict.entry_long ? 'ENTRY' : '—'} / ${strict.exit_long ? 'EXIT' : '—'}`;
+  document.getElementById('strict-params').textContent = `trix=${p.trix_len}, sig=${p.signal_len}, ma=${p.signal_ma}, trend=${p.trend_ma_len}`;
+
+  // heatmap drawing (throttled)
+  const canvas = document.getElementById('strict-heatmap');
+  const zonesEl = document.getElementById('strict-zones');
+  const cached = strictHMCache[sym];
+  const fresh = cached && (Date.now() - cached.ts) < 60_000;
+
+  const applyHM = (hm) => {
+    if (!hm) return;
+    drawStrictHeatmap(canvas, hm);
+    const top = hm.top || [];
+    if (zonesEl) {
+      zonesEl.innerHTML = top.length
+        ? top.map(z => `• zone: trix=${z.trix_len}, signal=${z.signal_len}, score=${Number(z.score).toFixed(2)}`).join('<br>')
+        : 'Aucune zone robuste (heatmap vide)';
+    }
+  };
+
+  if (fresh) {
+    applyHM(cached.data);
+  } else {
+    fetchStrictHeatmap(sym).then(applyHM);
+  }
+}
+
+// =============================================
+// WS DECOMPRESSION (gzip+base64 via pako)
+// =============================================
+function b64ToUint8Array(b64) {
+  const binStr = atob(b64);
+  const len = binStr.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binStr.charCodeAt(i);
+  return bytes;
+}
+
+function unpackWsMessage(text) {
+  // text = frame WS (toujours string)
+  const obj = JSON.parse(text);
+
+  // Mode compressé: enveloppe {"_compressed":"gzip+base64", "payload_b64":"..."}
+  if (obj && obj._compressed === 'gzip+base64') {
+    if (typeof pako === 'undefined') {
+      throw new Error('pako manquant: impossible de décompresser gzip.');
+    }
+    const gzBytes = b64ToUint8Array(obj.payload_b64);
+    const jsonStr = pako.ungzip(gzBytes, { to: 'string' });
+    return JSON.parse(jsonStr);
+  }
+
+  // Mode normal (non compressé)
+  return obj;
+}
+
+
+// =============================================
+// TIMEFRAME SELECTION
+// =============================================
+const TF_MAP = {
+  '30s': null,   // uses WS 30s resample
+  '1m':  '1m', '3m': '3m', '5m':  '5m', '15m':'15m',
+  '30m': '30m', '1h': '1h', '2h':  '2h', '4h': '4h', '1d': '1d'
+};
+let activeTF = '1m';
+
+function setTF(tf) {
+  activeTF = tf;
+  // Update button styles (stable)
+  document.querySelectorAll('#tf-bar .tf').forEach(b => {
+    const btf = (b.dataset && b.dataset.tf) ? b.dataset.tf : null;
+    b.classList.toggle('on', btf === tf);
+  });
+  // Reload chart data for active symbol
+  if (activeSym) loadTFData(activeSym, tf);
+}
+
+const _tfLoadedOnce = {}; // {sym_tf: bool} — fitContent seulement au 1er chargement
+
+async function loadTFData(sym, tf) {
+  const c = chartMap[sym];
+  if (!c) return;
+  if (tf === '30s') {
+    const sig = sigState[sym];
+    if (sig?.candles) {
+      const strictSet = new Set((sig.strict_entry_ts) || []);
+      const colored = sig.candles.map(cd => {
+        if (strictSet.has(cd.time)) return {...cd, color:'rgba(240,180,41,0.55)', borderColor:'#f0b429', wickColor:'#f0b429'};
+        const bull = cd.close >= cd.open;
+        return {...cd, color:bull?'#00e676':'#ff1744', borderColor:bull?'#00e676':'#ff1744', wickColor:bull?'#00e676':'#ff1744'};
+      });
+      try { c.candles.setData(colored); } catch(e){}
+    }
+    return;
+  }
+  try {
+    const key = sym.replace('/','_');
+    const r = await fetch('/api/klines/' + key + '/' + tf + '/300');
+    if (!r.ok) return;
+    const data = await r.json();
+    if (data?.candles?.length > 0) {
+      // Pour 5m, on peut appliquer les bougies jaunes Trix
+      const sig = sigState[sym];
+      let candles = data.candles;
+      if (tf === '5m' && sig?.strict_entry_ts?.length > 0) {
+        const strictSet = new Set(sig.strict_entry_ts);
+        candles = data.candles.map(cd => {
+          if (strictSet.has(cd.time)) return {...cd, color:'rgba(240,180,41,0.55)', borderColor:'#f0b429', wickColor:'#f0b429'};
+          const bull = cd.close >= cd.open;
+          return {...cd, color:bull?'#00e676':'#ff1744', borderColor:bull?'#00e676':'#ff1744', wickColor:bull?'#00e676':'#ff1744'};
+        });
+      }
+      // Applique le coloriage Trix Strict sur TOUS les timeframes (pas seulement 5m)
+      const sigAll = sigState[sym];
+      if (sigAll && sigAll.strict_entry_ts && sigAll.strict_entry_ts.length > 0) {
+        const strictSetAll = new Set(sigAll.strict_entry_ts);
+        const revSetAll    = new Set((sigAll.reversal_ts) || []);
+        candles = candles.map(cd => {
+          const isS = strictSetAll.has(cd.time);
+          const isR = revSetAll.has(cd.time);
+          if (isS || isR) return {...cd, color: isR?'rgba(255,235,59,0.55)':'rgba(240,180,41,0.55)', borderColor: isR?'#ffeb3b':'#f0b429', wickColor: isR?'#ffeb3b':'#f0b429'};
+          const bull = cd.close >= cd.open;
+          return {...cd, color:bull?'#00e676':'#ff1744', borderColor:bull?'#00e676':'#ff1744', wickColor:bull?'#00e676':'#ff1744'};
+        });
+      }
+      c.candles.setData(candles);
+      const _ftKey = sym + '_' + tf;
+      if (!_tfLoadedOnce[_ftKey]) { c.chart.timeScale().fitContent(); _tfLoadedOnce[_ftKey] = true; }
+      // Redessine les zones après chargement TF
+      try { renderSMCZones(sym, sigState[sym]); } catch(e){}
+    }
+    if (data?.ema20?.length > 0) {
+      try { c.ema20Line.setData(data.ema20); } catch(e){}
+    }
+  } catch(e) { log('TF load error: ' + e, 'inf'); }
+}
+
+
+// =============================================
+// VISION IA — ANALYSE GRAPHIQUE
+// =============================================
+
+// ─── RENDU ZONES SMC SUR GRAPHIQUE (OB / FVG / OTE) ──────────────────
+const _zoneSeriesMap = {}; // {sym: [series...]}
+
+function renderSMCZones(sym, sig) {
+  const c = chartMap[sym];
+  if (!c || !sig) return;
+
+  (_zoneSeriesMap[sym] || []).forEach(s => { try { c.chart.removeSeries(s); } catch(e){} });
+  _zoneSeriesMap[sym] = [];
+
+  const tNow = Math.floor(Date.now()/1000);
+  const t0   = tNow - 86400 * 14;
+  const t1   = tNow + 3600 * 48;
+
+  function addZone(top, bot, colTop, colBot) {
+    if (!top || !bot || !isFinite(top) || !isFinite(bot)) return;
+    const lTop = c.chart.addLineSeries({color:colTop, lineWidth:1, lineStyle:0, priceLineVisible:false, lastValueVisible:false});
+    lTop.setData([{time:t0,value:top},{time:t1,value:top}]);
+    const lBot = c.chart.addLineSeries({color:colBot, lineWidth:1, lineStyle:0, priceLineVisible:false, lastValueVisible:false});
+    lBot.setData([{time:t0,value:bot},{time:t1,value:bot}]);
+    _zoneSeriesMap[sym].push(lTop, lBot);
+  }
+
+  function addLevel(val, col, style) {
+    if (!val || !isFinite(val)) return;
+    const l = c.chart.addLineSeries({color:col, lineWidth:1, lineStyle:style||2, priceLineVisible:false, lastValueVisible:false});
+    l.setData([{time:t0,value:val},{time:t1,value:val}]);
+    _zoneSeriesMap[sym].push(l);
+  }
+
+  // FVG — toutes les FVG (v4 : pas de cap)
+  (sig.fvg||[]).filter(z => z.type === 'bull').forEach(z =>
+    addZone(z.top, z.bot, 'rgba(0,229,255,0.65)', 'rgba(0,229,255,0.65)'));
+  (sig.fvg||[]).filter(z => z.type === 'bear').forEach(z =>
+    addZone(z.top, z.bot, 'rgba(255,23,68,0.55)', 'rgba(255,23,68,0.55)'));
+
+  // OB — couleur selon statut (intact/tested/broken)
+  (sig.ob||[]).forEach(z => {
+    const isBull = z.type === 'bull_ob';
+    const st = z.status || 'intact';
+    let col;
+    if (st === 'intact')      col = isBull ? 'rgba(0,230,118,0.85)' : 'rgba(255,152,0,0.85)';
+    else if (st === 'tested') col = isBull ? 'rgba(240,180,41,0.65)' : 'rgba(240,180,41,0.65)';
+    else                      col = 'rgba(120,120,120,0.30)';  // broken = grisé
+    addZone(z.top, z.bot, col, col);
+  });
+
+  // Niveaux entry / SL / TP1–TP4
+  if (sig.entry) addLevel(sig.entry, 'rgba(64,196,255,0.7)', 2);
+  if (sig.sl)    addLevel(sig.sl,    'rgba(255,23,68,0.7)',  2);
+  const tpColors = ['rgba(0,230,118,0.7)', 'rgba(0,200,100,0.55)', 'rgba(0,170,80,0.4)', 'rgba(0,140,60,0.3)'];
+  (sig.tps||[]).slice(0,4).forEach((tp,i) => addLevel(tp, tpColors[i], 3));
+
+  // Zone OTE Fibonacci (si score >= 4)
+  if ((sig.score||0) >= 4 && sig.entry) {
+    const isLong  = (sig.side||'').includes('ACHAT');
+    const candles = sig.candles || [];
+    if (candles.length >= 20) {
+      const tail  = candles.slice(-60);
+      const swHi  = Math.max(...tail.map(c=>c.high));
+      const swLo  = Math.min(...tail.map(c=>c.low));
+      const rng   = swHi - swLo;
+      const oteTop = isLong ? swHi - 0.382*rng : swLo + 0.786*rng;
+      const oteBot = isLong ? swHi - 0.786*rng : swLo + 0.382*rng;
+      const gp     = isLong ? swHi - 0.500*rng : swLo + 0.500*rng;
+      addZone(oteTop, oteBot, 'rgba(255,214,0,0.55)', 'rgba(255,214,0,0.55)');
+      addLevel(gp, 'rgba(255,214,0,0.45)', 2);
+    }
+  }
+}
+
+async function runVisionAnalysis() {
+  if (!activeSym) return;
+  const btn = document.getElementById('vision-btn');
+  btn.classList.add('loading');
+  const btnText = btn.querySelector('.vdot');
+  if (btnText) btnText.style.animation = 'pulse 0.4s infinite';
+
+  // Afficher panel d'attente immédiatement
+  const panel = document.getElementById('vision-panel');
+  const body  = document.getElementById('vp-body');
+  panel.classList.add('show');
+  body.innerHTML = '<div style="color:var(--muted);font-size:10px;padding:8px">⏳ Analyse en cours — Ollama Vision...</div>';
+
+  try {
+    // Capture du canvas LightweightCharts
+    let imageB64 = '';
+    try {
+      const wrap   = document.getElementById('chart-container');
+      const canvas = wrap.querySelector('canvas');
+      if (canvas) {
+        // Tenter la capture (peut échouer si canvas tainted)
+        try { imageB64 = canvas.toDataURL('image/png').split(',')[1]; } catch(canvasErr) {
+          addRawLog('[Vision] Canvas tainted — analyse sans image (texte seul)');
+        }
+        // Vérifier que l'image n'est pas triviale (< 5KB = image vide)
+        if (imageB64 && imageB64.length < 6000) {
+          addRawLog('[Vision] Image capturée trop petite (' + imageB64.length + ' chars) — analyse sans image');
+          imageB64 = '';
+        }
+      }
+    } catch(e) { imageB64 = ''; }
+
+    const sig      = sigState[activeSym] || {};
+    const price    = sig.entry || sig.candles?.[sig.candles.length-1]?.close || 0;
+    const sideHint = sig.side || null;
+
+    const r = await fetch('/api/vision/analyze', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        image: imageB64,
+        symbol: activeSym,
+        timeframe: activeTF,
+        price: price,
+        side_hint: sideHint,
+        // Envoi du contexte algo complet pour analyse sans image
+        algo_context: {
+          score:      sig.score,
+          score_max:  sig.score_max || 7,
+          side:       sig.side,
+          confs:      sig.confs,
+          entry:      sig.entry,
+          sl:         sig.sl,
+          tps:        sig.tps,
+          struct_h2:  sig.struct_h2,
+          struct_h1:  sig.struct_h1,
+          fvg_count:  (sig.fvg||[]).length,
+          ob_count:   (sig.ob||[]).length,
+          ob_status_30m:  (sig.ob_context||{}).ob_status_30m,
+          ob_quality_30m: (sig.ob_context||{}).ob_quality_30m,
+          ob_fvg_15m_ok:  (sig.ob_context||{}).ob_fvg_15m_ok,
+          range_30m:      (sig.ob_context||{}).range_30m,
+          rsi_5m:         sig.rsi_5m,
+        }
+      })
+    });
+
+    if (!r.ok) {
+      const errTxt = await r.text().catch(()=>'');
+      throw new Error('HTTP ' + r.status + ' — ' + errTxt.slice(0,200));
+    }
+
+    const result = await r.json();
+
+    // Affichage de l'erreur retournée par le backend
+    if (result.error || result._error) {
+      const errMsg  = result.error || result._error || 'Erreur inconnue';
+      const model   = result._model  || 'llava';
+      const elapsed = result._elapsed_s ? (' (' + result._elapsed_s + 's)') : '';
+      if (body) body.innerHTML =
+        '<div class="vp-error">⚠️ ' + errMsg + elapsed + '</div>' +
+        '<div style="color:var(--muted);font-size:9px;padding:6px">' +
+          'Modèle: <b>' + model + '</b><br>' +
+          '→ Vérifier que Ollama est actif : <code>ollama serve</code><br>' +
+          '→ Modèle disponible : <code>ollama pull llava</code><br>' +
+          '→ Ajouter dans .env : <code>VISION_KEEP_ALIVE=300</code>' +
+        '</div>';
+      addRawLog('[Vision] Erreur (' + model + '): ' + errMsg);
+      return;
+    }
+
+    renderVisionResult(result);
+    drawVisionElements(result);
+    addRawLog('[Vision] OK — bias:' + result.bias + ' conf:' + result.confidence + '%' +
+      (imageB64 ? ' (image)' : ' (texte seul)'));
+
+  } catch(e) {
+    const errMsg = String(e);
+    if (body) body.innerHTML = '<div class="vp-error">⚠️ Erreur connexion: ' + errMsg + '</div>';
+    addRawLog('[Vision] Erreur: ' + errMsg);
+  } finally {
+    btn.classList.remove('loading');
+    if (btnText) btnText.style.animation = '';
+  }
+}
+
+function renderVisionResult(r) {
+  const panel = document.getElementById('vision-panel');
+  const body  = document.getElementById('vp-body');
+  panel.classList.add('show');
+
+  // Afficher l'erreur si présente
+  if (r && (r.error || r._error)) {
+    const errMsg = r.error || r._error || 'Erreur inconnue';
+    const model  = r._model  || 'llava';
+    const elapsed = r._elapsed_s ? (' (' + r._elapsed_s + 's)') : '';
+    body.innerHTML =
+      '<div class="vp-error">⚠️ ' + errMsg + elapsed + '</div>' +
+      '<div style="color:var(--muted);font-size:9px;padding:6px 0">' +
+        'Modèle: <b>' + model + '</b> — ' +
+        'Vérifier: <code>ollama list</code> et <code>ollama run llava</code><br>' +
+        'Conseil: ajouter <b>VISION_KEEP_ALIVE=300</b> dans le .env (évite le timeout de rechargement)' +
+      '</div>';
+    return;
+  }
+
+  const biasCls = r.bias === 'LONG' ? 'vbull' : r.bias === 'SHORT' ? 'vbear' : 'vneutre';
+  const trendCls = r.trend === 'BULLISH' ? 'vbull' : r.trend === 'BEARISH' ? 'vbear' : 'vneutre';
+  const conf = r.confidence || 0;
+  const confColor = conf >= 70 ? '#00e676' : conf >= 50 ? '#f0b429' : '#ff1744';
+  const s = r.setup || {};
+
+  body.innerHTML = `
+    <div class="vp-col">
+      <div class="vp-row"><span class="vp-label">Tendance</span><span class="vp-val ${trendCls}">${r.trend||'—'}</span></div>
+      <div class="vp-row"><span class="vp-label">Biais</span><span class="vp-val ${biasCls}">${r.bias||'—'}</span></div>
+      <div class="vp-row"><span class="vp-label">Structure</span><span class="vp-val" style="font-size:9px;text-align:right;max-width:130px">${r.structure||'—'}</span></div>
+      <div class="vp-row" style="flex-direction:column;gap:2px">
+        <div style="display:flex;justify-content:space-between"><span class="vp-label">Confiance</span><span class="vp-val" style="color:${confColor}">${conf}%</span></div>
+        <div class="conf-bar"><div class="conf-fill" style="width:${conf}%;background:${confColor}"></div></div>
+      </div>
+    </div>
+    <div class="vp-col">
+      <div class="vp-row"><span class="vp-label">Setup valide</span><span class="vp-val ${s.valid?'vbull':'vbear'}">${s.valid?'OUI':'NON'}</span></div>
+      <div class="vp-row"><span class="vp-label">Type</span><span class="vp-val" style="font-size:9px">${s.entry_type||'—'}</span></div>
+      <div class="vp-row"><span class="vp-label">Entrée</span><span class="vp-val lv-e">${fmt(s.entry)}</span></div>
+      <div class="vp-row"><span class="vp-label">SL</span><span class="vp-val lv-s">${fmt(s.sl)}</span></div>
+      <div class="vp-row"><span class="vp-label">TP1 / TP2</span><span class="vp-val lv-t">${fmt(s.tp1)} / ${fmt(s.tp2)}</span></div>
+      <div class="vp-row"><span class="vp-label">R:R</span><span class="vp-val">${s.rr_ratio ? '1:'+s.rr_ratio.toFixed(1) : '—'}</span></div>
+    </div>
+    ${r.narrative ? '<div class="vp-narrative">' + r.narrative + '</div>' : ''}
+  `;
+
+  // Update sidebar levels with vision data if setup is valid
+  if (s.valid && s.entry) {
+    document.getElementById('lv-e').textContent  = fmt(s.entry);
+    document.getElementById('lv-s').textContent  = fmt(s.sl);
+    document.getElementById('lv-t1').textContent = fmt(s.tp1);
+    document.getElementById('lv-t2').textContent = fmt(s.tp2);
+    document.getElementById('lv-t3').textContent = fmt(s.tp3);
+    const badge = document.getElementById('src-badge');
+    if (badge) { badge.textContent = 'VISION IA'; badge.className = 'src-badge src-bot'; }
+    // Indiquer que l'entrée vient de la vision
+    const entryTfBadge = document.getElementById('entry-tf-badge');
+    if (entryTfBadge) entryTfBadge.textContent = 'VISION';
+  }
+}
+
+function drawVisionElements(r) {
+  const c = chartMap[activeSym];
+  if (!c) return;
+  const tNow = Math.floor(Date.now()/1000);
+  const t0   = tNow - 86400 * 7;
+  const t1   = tNow + 86400 * 7;
+
+  // Draw Order Blocks as colored rectangles (via price lines)
+  (r.order_blocks || []).forEach(ob => {
+    const col = ob.type === 'BULL' ? 'rgba(0,230,118,0.7)' : 'rgba(255,23,68,0.7)';
+    const topLine = c.chart.addLineSeries({color:col, lineWidth:1, lineStyle:0, priceLineVisible:false, lastValueVisible:false});
+    const botLine = c.chart.addLineSeries({color:col, lineWidth:1, lineStyle:0, priceLineVisible:false, lastValueVisible:false});
+    try {
+      topLine.setData([{time:t0,value:ob.top},{time:t1,value:ob.top}]);
+      botLine.setData([{time:t0,value:ob.bot},{time:t1,value:ob.bot}]);
+      drawMap[activeSym].push(topLine, botLine);
+    } catch(e){}
+  });
+
+  // Draw FVG zones
+  (r.fvg || []).forEach(fvg => {
+    const col = fvg.type === 'BULL' ? 'rgba(64,196,255,0.6)' : 'rgba(179,136,255,0.6)';
+    const topLine = c.chart.addLineSeries({color:col, lineWidth:1, lineStyle:2, priceLineVisible:false, lastValueVisible:false});
+    const botLine = c.chart.addLineSeries({color:col, lineWidth:1, lineStyle:2, priceLineVisible:false, lastValueVisible:false});
+    try {
+      topLine.setData([{time:t0,value:fvg.top},{time:t1,value:fvg.top}]);
+      botLine.setData([{time:t0,value:fvg.bot},{time:t1,value:fvg.bot}]);
+      drawMap[activeSym].push(topLine, botLine);
+    } catch(e){}
+  });
+
+  // Draw liquidity zones
+  (r.liquidity_zones || []).forEach(lz => {
+    const ln = c.chart.addLineSeries({color:'rgba(240,180,41,0.5)', lineWidth:1, lineStyle:3, priceLineVisible:false, lastValueVisible:false});
+    try {
+      ln.setData([{time:t0,value:lz.price},{time:t1,value:lz.price}]);
+      drawMap[activeSym].push(ln);
+    } catch(e){}
+  });
+
+  // Draw setup levels from vision
+  const s = r.setup || {};
+  if (s.valid && s.entry) {
+    [
+      [c.entryLine, s.entry, 'rgba(64,196,255,0.9)'],
+      [c.slLine,    s.sl,    'rgba(255,23,68,0.9)'],
+      [c.tp1Line,   s.tp1,   'rgba(0,230,118,0.9)'],
+      [c.tp2Line,   s.tp2,   'rgba(0,200,100,0.7)'],
+    ].forEach(([series, val, _col]) => {
+      if (val && isFinite(val)) {
+        try { series.setData([{time:t0,value:val},{time:t1,value:val}]); } catch(e){}
+      }
+    });
+  }
+}
+
+// Handle vision_result pushed from backend (when claude1439 triggers analysis)
+// Handled in WS onmessage below
+
+// =============================================
+// LEARNING ADAPTATIF — Module 4 v4
+// =============================================
+const learningCache = {}; // {sym: report}
+let learningActiveSym = null;
+
+async function fetchLearningReport(sym) {
+  try {
+    const key = sym.replace('/','_');
+    const r = await fetch('/api/learning/report/' + key);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch(e) { return null; }
+}
+
+async function refreshLearningPanel() {
+  if (!activeSym) return;
+  const report = await fetchLearningReport(activeSym);
+  if (!report) return;
+  learningCache[activeSym] = report;
+  learningActiveSym = activeSym;
+  renderLearningPanel(report);
+}
+
+function renderLearningPanel(report) {
+  const content = document.getElementById('learning-content');
+  const actions = document.getElementById('learning-actions');
+  const dot     = document.getElementById('learning-pending-dot');
+  if (!content) return;
+
+  const pending = report && report.status === 'ready_for_confirm';
+  if (dot) dot.style.display = pending ? 'inline' : 'none';
+  if (actions) actions.style.display = pending ? 'flex' : 'none';
+
+  if (!report || report.status === 'not_enough_data') {
+    content.innerHTML = `<div style="color:var(--muted);font-size:10px">Rapport disponible après ${report?.count||0}/${10} signaux analysés</div>`;
+    return;
+  }
+
+  const wr = ((report.win_rate || 0)*100).toFixed(0);
+  const wrColor = wr >= 60 ? 'var(--green)' : wr >= 45 ? 'var(--accent)' : 'var(--red)';
+
+  let html = `<div class="learn-row"><span class="learn-k">Win rate</span><span class="learn-w" style="color:${wrColor}">${wr}% (${report.wins||0}/${report.total||0})</span></div>`;
+
+  const crits = report.criteria || {};
+  for (const [crit, st] of Object.entries(crits)) {
+    if (!st || st.count === 0) continue;
+    const cw   = parseFloat(st.current_weight || 1.0).toFixed(2);
+    const sw   = parseFloat(st.suggested_weight || 1.0).toFixed(2);
+    const wr2  = st.win_rate != null ? ((st.win_rate*100).toFixed(0)+'%') : '—';
+    const diff = parseFloat(sw) - parseFloat(cw);
+    const arCls = diff > 0.01 ? 'learn-up' : diff < -0.01 ? 'learn-dn' : 'learn-eq';
+    const arTxt = diff > 0.01 ? '▲' : diff < -0.01 ? '▼' : '=';
+    html += `<div class="learn-row">
+      <span class="learn-k" style="font-size:9px">${crit.replace(/_/g,' ')}</span>
+      <span style="font-size:9px;display:flex;gap:4px;align-items:center">
+        <span style="color:var(--muted)">${wr2}</span>
+        <span class="learn-w">${cw}</span>
+        <span class="${arCls}">${arTxt}${sw}</span>
+      </span>
+    </div>`;
+  }
+
+  if (pending) {
+    html += `<div style="margin-top:6px;padding:4px 6px;background:rgba(240,180,41,.06);border-radius:3px;border-left:2px solid var(--accent);font-size:9px;color:var(--accent)">
+      ⚡ Adaptation en attente de confirmation
+    </div>`;
+  }
+  content.innerHTML = html;
+}
+
+async function learningConfirm(apply) {
+  if (!learningActiveSym) return;
+  try {
+    const key = learningActiveSym.replace('/','_');
+    const r = await fetch('/api/learning/confirm/' + key, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({apply})
+    });
+    const d = await r.json();
+    if (apply) {
+      addRawLog('[LEARNING] Poids appliqués pour ' + learningActiveSym);
+    } else {
+      addRawLog('[LEARNING] Adaptation rejetée pour ' + learningActiveSym);
+    }
+    await refreshLearningPanel();
+  } catch(e) {
+    addRawLog('[LEARNING] Erreur confirmation: ' + e);
+  }
+}
+
+// Polling learning toutes les 2 min (refresh léger)
+setInterval(refreshLearningPanel, 120_000);
+
+// =============================================
+// START
+// =============================================
+// Wait for LightweightCharts to be available before init
+function waitForCharts(cb, tries) {
+  tries = tries || 0;
+  if (typeof LightweightCharts !== 'undefined') { cb(); return; }
+  if (tries > 50) { log('LightweightCharts introuvable — vérifie ta connexion', 'sig'); return; }
+  setTimeout(() => waitForCharts(cb, tries + 1), 200);
+}
+
+
+// ─────────────────────────────────────────────────────────────
+// STRICT monitoring (temps réel)
+// ─────────────────────────────────────────────────────────────
+
+async function refreshStrictMonitor(){
+  const lastEl = document.getElementById('strict-monitor-last');
+  const wEl = document.getElementById('strict-monitor-workers');
+  const tb = document.getElementById('strict-monitor-tbody');
+  if(!lastEl || !wEl || !tb) return;
+  try{
+    const r = await fetch('/api/strict/monitor');
+    const j = await r.json();
+    const workers = (j.workers||[]).map(w=>{
+      const cpu = (typeof w.cpu_pct === 'number') ? (w.cpu_pct.toFixed(1)+'%') : 'n/a';
+      const mem = (typeof w.mem_mb === 'number') ? (w.mem_mb.toFixed(0)+'MB') : '';
+      return `PID ${w.pid||'?'}: ${w.alive?'alive':'dead'} | ${cpu} ${mem}`;
+    }).join(' · ');
+    wEl.textContent = 'Workers ('+(j.strict_workers||'?')+'): ' + (workers || '—');
+    lastEl.textContent = 'MAJ: ' + (j.utc_ts||'—');
+
+    const rows = (j.rows||[]).slice().sort((a,b)=>String(a.symbol).localeCompare(String(b.symbol)));
+    tb.innerHTML = rows.map(x=>{
+      const state = (x.status|| (x.running?'running':(x.pending?'queued':'idle')) );
+      const badge = _statusBadge({error:x.error, has_heatmap:x.has_heatmap, running:x.running, pending:x.pending, strict:{status:state}});
+      const phase = x.phase || '—';
+      const it = (x.iters_done!=null? x.iters_done:'—') + '/' + (x.iters_total!=null? x.iters_total:'—');
+      const cpuCol = (workers||'n/a');
+      return `<tr>
+        <td><b>${x.symbol}</b></td>
+        <td><span class="strict-badge ${badge.cls}">${badge.txt}</span></td>
+        <td class='strict-phase'>${phase}</td>
+        <td class='strict-dur'>${_fmtDur(x.duration_s, true)}</td>
+        <td class='strict-it'>${it}</td>
+        <td class='strict-cpu'>${(j.workers||[]).map(w=> (typeof w.cpu_pct==='number'? w.cpu_pct.toFixed(0)+'%':'n/a')).join(' / ') || 'n/a'}</td>
+        <td>${(x.zones_count!=null? x.zones_count:'—')}</td>
+        <td style='color:#ffb0b0'>${(x.error||'')}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){
+    lastEl.textContent = 'MAJ: erreur';
+  }
+}
+
+// Démarrage robuste:
+// - On tente d'initialiser les charts/WS (init)
+// - MAIS on démarre toujours le polling STRICT/monitor même si LightweightCharts ne charge pas.
+window.addEventListener('load', () => {
+  // Purge automatique de l'historique STRICT corrompu (durées aberrantes héritées de v3)
+  try {
+    const hist = loadStrictHistory();
+    const cleaned = hist.filter(r => {
+      if (!r || !r.duration || r.duration === '—') return true;
+      // Durée aberrante : contient des milliers de minutes (ex: "45634m 55s")
+      const match = r.duration.match(/^(\d+)m/);
+      if (match && parseInt(match[1]) > 240) return false; // > 4h = corrompu
+      return true;
+    });
+    if (cleaned.length !== hist.length) {
+      saveStrictHistory(cleaned);
+      console.log('[STRICT] Historique nettoyé:', hist.length - cleaned.length, 'entrées corrompues supprimées');
+    }
+  } catch(e) {}
+
+  try {
+    init();
+  } catch (e) {
+    console.error('INIT error:', e);
+    try { log('Init partiel: charts indisponibles (voir Console F12).', 'sig'); } catch(_) {}
+  }
+
+  // STRICT polling (indépendant des charts)
+  setTimeout(refreshStrictStatusAll, 800);
+  setTimeout(refreshStrictMonitor, 1200);
+  setInterval(refreshStrictStatusAll, 5000);
+  setInterval(refreshStrictMonitor, 5000);
+
+  // Learning polling (toutes les 2 min, première requête après 3s)
+  setTimeout(refreshLearningPanel, 3000);
+});
+</script>
+
+
+<!-- STRICT: Modal Détails + Historique -->
+<div id="strict-modal">
+  <div class="strict-modal-card">
+    <div class="strict-modal-head">
+      <div class="strict-modal-title">STRICT — Suivi recalibrage</div>
+      <div class="strict-modal-tabs">
+        <div class="strict-tab on" id="strict-tab-live" onclick="switchStrictTab('live')">Progression</div>
+        <div class="strict-tab" id="strict-tab-history" onclick="switchStrictTab('history')">Historique</div>
+        <button class="tbtn" style="padding:6px 10px" onclick="closeStrictModal()">Fermer</button>
+      </div>
+    </div>
+
+    <div class="strict-modal-body" id="strict-modal-live">
+      <div class="strict-col">
+        <div style="font-weight:800;margin-bottom:8px">État temps réel</div>
+        <div id="strict-live-kv" class="strict-kv"></div>
+      </div>
+      <div class="strict-col">
+        <div style="font-weight:800;margin-bottom:8px">Logs (UI)</div>
+        <div id="strict-live-logs" class="strict-log"></div>
+        <div class="strict-muted" style="margin-top:8px">Note: ces logs reflètent l’évolution des statuts (queue/running/ok/erreur) observée via /api/strict/status.</div>
+      </div>
+    </div>
+
+    <div class="strict-modal-body" id="strict-modal-history" style="display:none">
+      <div class="strict-col" style="flex:1">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-weight:800">Historique recalibrages</div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="strict-detail-btn" onclick="clearStrictHistory()">Vider</button>
+            <button class="strict-detail-btn" onclick="exportStrictHistory()">Exporter JSON</button>
+          </div>
+        </div>
+        <div id="strict-zones-chart-wrap">
+  <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px">
+    <div style="font-weight:800">Évolution — nb zones robustes</div>
+    <div class="strict-muted" style="font-size:10px">Source: historique localStorage (strict_recal_history)</div>
+  </div>
+  <div style="display:flex;gap:8px;align-items:center;margin:6px 0 10px 0">
+  <span style="font-size:11px;color:var(--muted)">Graphique zones :</span>
+  <button id="strict-chart-live" class="strict-detail-btn" onclick="setStrictChartMode('live')">Live</button>
+  <button id="strict-chart-history" class="strict-detail-btn on" onclick="setStrictChartMode('history')">Historique</button>
+  <span id="strict-chart-hint" style="font-size:10px;color:var(--muted)"></span>
+</div>
+<canvas id="strict-zones-chart"></canvas>
+</div>
+
+<table class="strict-table" id="strict-history-table">
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>Symbole</th>
+              <th>Durée</th>
+              <th>Zones</th>
+              <th>Sharpe</th>
+              <th>Job</th>
+              <th>Status</th>
+              <th>Erreur</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
