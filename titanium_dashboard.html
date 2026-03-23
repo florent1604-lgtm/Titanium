@@ -158,6 +158,32 @@ body.light-mode{
 .vp-close{cursor:pointer;color:var(--muted);font-size:14px}
 .vp-body{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .vp-col{display:flex;flex-direction:column;gap:3px}
+
+/* ── ORDER BOOK PANEL [v8] ──────────────────────────────────────── */
+#ss-body-orderbook .ob-book-wrap{display:flex;flex-direction:column;gap:0;font-size:10px;font-family:'JetBrains Mono',monospace}
+.ob-row{display:flex;align-items:center;height:18px;position:relative;padding:0 4px;gap:2px}
+.ob-bar{position:absolute;top:0;bottom:0;opacity:.13;transition:width .15s ease}
+.ob-bar-bid{background:#00e676;right:0}
+.ob-bar-ask{background:#ff1744;left:0}
+.ob-price{width:36%;text-align:center;font-weight:700;z-index:1;font-size:9.5px}
+.ob-qty{width:32%;z-index:1;font-size:9px}
+.ob-qty-bid{text-align:right;color:#00e676}
+.ob-qty-ask{text-align:left;color:#ff4444}
+.ob-spread-bar{height:22px;background:rgba(240,180,41,.07);border-top:1px solid rgba(240,180,41,.18);border-bottom:1px solid rgba(240,180,41,.18);display:flex;align-items:center;justify-content:center;gap:8px;font-size:9px;font-family:'JetBrains Mono',monospace}
+.ob-imb-track{height:4px;background:var(--border);border-radius:3px;overflow:hidden;position:relative;margin:4px 0}
+.ob-imb-fill{height:100%;background:linear-gradient(to right,#ff1744,#555,#00e676);width:100%}
+.ob-imb-cursor{position:absolute;top:-2px;bottom:-2px;width:2px;background:#fff;border-radius:1px;box-shadow:0 0 6px #fff;transition:left .25s ease}
+.ob-stat-row{display:flex;justify-content:space-between;font-size:9px;color:var(--muted);margin-top:2px}
+.ob-signal-item{padding:4px 6px;border-radius:4px;margin-bottom:3px;font-size:9px;border-left:3px solid transparent;background:rgba(255,255,255,.02)}
+.ob-sig-wall_buy,.ob-sig-absorption_buy{border-left-color:#00e676;background:rgba(0,230,118,.05)}
+.ob-sig-wall_sell,.ob-sig-absorption_sell{border-left-color:#ff1744;background:rgba(255,23,68,.05)}
+.ob-sig-imbalance_buy{border-left-color:#00e676}
+.ob-sig-imbalance_sell{border-left-color:#ff1744}
+.ob-sig-wall{border-left-color:#f0b429;background:rgba(240,180,41,.06)}
+.ob-sig-label{font-weight:700;color:#f1f5f9;font-size:9px}
+.ob-sig-desc{color:var(--muted);font-size:8.5px;margin-top:1px}
+.ob-sig-ctx{color:#64748b;font-size:8px;margin-top:1px}
+.ob-sig-strength{font-size:8px;color:var(--muted)}
 .vp-row{display:flex;justify-content:space-between;font-size:10px}
 .vp-label{color:var(--muted)}.vp-val{font-weight:600}
 .vp-narrative{grid-column:1/-1;font-size:10px;color:var(--text);padding:6px;background:rgba(255,255,255,.04);border-radius:3px;border-left:2px solid var(--accent);margin-top:4px;line-height:1.6}
@@ -1182,6 +1208,73 @@ body.light-mode{
       </div>
     </div>
 
+    <!-- v8 — ORDER BOOK N2 (Module 20) ──────────────────────────── -->
+    <div class="ss" id="ss-orderbook">
+      <div class="ss-toggle" onclick="toggleSection('orderbook')">
+        <div class="stitle">Order Book N2 <span style="font-size:8px;padding:1px 5px;border-radius:2px;background:rgba(0,230,118,.1);border:1px solid rgba(0,230,118,.3);color:#00e676">v8</span> <span id="ob-ws-dot" style="width:6px;height:6px;border-radius:50%;display:inline-block;background:#444;vertical-align:middle;margin-left:3px"></span></div>
+        <span class="ss-arrow closed" id="ss-arrow-orderbook">▾</span>
+      </div>
+      <div class="ss-body closed" id="ss-body-orderbook" style="max-height:0">
+
+        <!-- Sélecteur actif (sync avec activeSym) -->
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px 3px;font-size:9px;color:var(--muted)">
+          <span>Actif : <strong id="ob-sym-label" style="color:#f1f5f9">—</strong></span>
+          <span id="ob-last-update" style="font-size:8.5px;color:#475569">—</span>
+        </div>
+
+        <!-- Prix best bid/ask + spread -->
+        <div class="ob-spread-bar">
+          <span id="ob-best-bid" style="color:#00e676">—</span>
+          <span style="color:var(--muted)">│</span>
+          <span style="color:var(--accent)">spread: <strong id="ob-spread">—</strong></span>
+          <span style="color:var(--muted)">│</span>
+          <span id="ob-best-ask" style="color:#ff4444">—</span>
+        </div>
+
+        <!-- Carnet d'ordres : asks + price mid + bids -->
+        <div class="ob-book-wrap" style="max-height:230px;overflow:hidden">
+          <!-- Asks (ordre inversé — haut = prix le plus éloigné) -->
+          <div id="ob-asks" style="display:flex;flex-direction:column-reverse"></div>
+          <!-- Bids -->
+          <div id="ob-bids"></div>
+        </div>
+
+        <!-- Imbalance bar -->
+        <div style="padding:5px 8px 2px">
+          <div style="display:flex;justify-content:space-between;font-size:8.5px;margin-bottom:2px">
+            <span style="color:#00e676">BIDS <span id="ob-bid-vol">—</span></span>
+            <span style="color:var(--muted)">IMBALANCE</span>
+            <span style="color:#ff4444">ASKS <span id="ob-ask-vol">—</span></span>
+          </div>
+          <div class="ob-imb-track">
+            <div class="ob-imb-fill"></div>
+            <div id="ob-imb-cursor" class="ob-imb-cursor" style="left:50%"></div>
+          </div>
+          <div id="ob-imb-text" style="text-align:center;font-size:8.5px;font-family:'JetBrains Mono',monospace;color:var(--muted);margin-top:1px">50% / 50%</div>
+        </div>
+
+        <!-- Compteurs SMC -->
+        <div class="ob-stat-row" style="padding:0 8px 4px">
+          <span>Murs: <strong id="ob-stat-walls" style="color:#f0b429">0</strong></span>
+          <span>Imb: <strong id="ob-stat-imb" style="color:var(--blue)">0</strong></span>
+          <span>Absorb: <strong id="ob-stat-abs" style="color:#ce93d8">0</strong></span>
+        </div>
+
+        <!-- Signaux SMC OB -->
+        <div style="padding:0 6px;border-top:1px solid var(--border);padding-top:5px;margin-top:2px">
+          <div style="font-size:8.5px;color:var(--muted);margin-bottom:3px;font-weight:600;text-transform:uppercase;letter-spacing:.04em">Signaux SMC</div>
+          <div id="ob-signals-list" style="max-height:120px;overflow-y:auto">
+            <div style="text-align:center;color:#475569;font-size:9px;padding:8px">En attente de données…</div>
+          </div>
+        </div>
+
+        <!-- Infos moteur -->
+        <div style="padding:4px 8px 6px;font-size:8px;color:#374151;font-family:'JetBrains Mono',monospace;border-top:1px solid var(--border);margin-top:4px">
+          Engine: Binance Futures WS + Hybrid Gold · SMC v8
+        </div>
+      </div>
+    </div>
+
     <!-- 7. JOURNAL -->
     <div class="ss" style="flex:1;display:flex;flex-direction:column;overflow:hidden;padding-bottom:0">
       <div class="stitle">Journal</div>
@@ -1717,6 +1810,8 @@ function startWS(sym){
       _applyActiveTF(msg.active_tf);
     } else if(msg.type==='log'){
       addRawLog('[BOT] '+(msg.message||''));
+    } else if(msg.type==='BOOK_UPDATE'){
+      _ob_handleBookUpdate(msg);
     }
   };
   ws.onclose = ()=>{ document.getElementById('ws-status').textContent='RECONNECT'; document.getElementById('ws-status').style.color='#f0b429'; setTimeout(()=>startWS(sym),3000); };
@@ -3764,6 +3859,193 @@ window.addEventListener('load',()=>{
     }
   }, 5000);
 });
+
+// ================================================================
+// MODULE 20 — ORDER BOOK ENGINE [v8]
+// Gestion du panel Order Book N2 dans la sidebar
+// Reçoit les messages type=BOOK_UPDATE depuis le WS /ws/{symbol}
+// ================================================================
+(function(){
+
+  // État interne du module OB
+  const _ob = {
+    stats: { walls: 0, wallsBuy: 0, wallsSell: 0, imbalances: 0, absorptions: 0 },
+    lastSymbol: null,
+    signalCount: 0,
+  };
+
+  // Formate un volume : 1234.56 → "1.23k", 123.4 → "123"
+  function _obFmtVol(v){
+    if(v >= 1000) return (v/1000).toFixed(1)+'k';
+    if(v >= 100)  return v.toFixed(0);
+    return v.toFixed(1);
+  }
+
+  // Formate un prix selon son amplitude
+  function _obFmtPrice(p){
+    if(p >= 1000) return p.toFixed(1);
+    if(p >= 10)   return p.toFixed(2);
+    return p.toFixed(3);
+  }
+
+  // Génère le HTML d'une ligne du carnet
+  function _obRowHtml(price, qty, maxVol, side){
+    const w = maxVol > 0 ? (qty / maxVol * 100).toFixed(1) : 0;
+    if(side === 'bid'){
+      return `<div class="ob-row">
+        <div class="ob-bar ob-bar-bid" style="width:${w}%"></div>
+        <div class="ob-qty ob-qty-bid">${_obFmtVol(qty)}</div>
+        <div class="ob-price" style="color:#f1f5f9">${_obFmtPrice(price)}</div>
+        <div style="width:32%"></div>
+      </div>`;
+    } else {
+      return `<div class="ob-row">
+        <div class="ob-bar ob-bar-ask" style="width:${w}%"></div>
+        <div style="width:32%"></div>
+        <div class="ob-price" style="color:#f1f5f9">${_obFmtPrice(price)}</div>
+        <div class="ob-qty ob-qty-ask">${_obFmtVol(qty)}</div>
+      </div>`;
+    }
+  }
+
+  // Rendu du carnet d'ordres (bids + asks)
+  function _obRenderBook(bids, asks){
+    const allVols = [...bids.map(b=>b[1]), ...asks.map(a=>a[1])];
+    const maxVol = allVols.length ? Math.max(...allVols) : 1;
+
+    const bidsEl = document.getElementById('ob-bids');
+    const asksEl = document.getElementById('ob-asks');
+    if(!bidsEl || !asksEl) return;
+
+    // Top 10 niveaux pour limiter la hauteur
+    const bidsSlice = bids.slice(0, 10);
+    const asksSlice = asks.slice(0, 10);
+
+    bidsEl.innerHTML = bidsSlice.map(([p,q])=>_obRowHtml(p,q,maxVol,'bid')).join('');
+    // Asks affichées en column-reverse : on les insère dans l'ordre naturel
+    asksEl.innerHTML = asksSlice.map(([p,q])=>_obRowHtml(p,q,maxVol,'ask')).join('');
+  }
+
+  // Mise à jour de la barre d'imbalance
+  function _obUpdateImbalance(ratio){
+    const cursor = document.getElementById('ob-imb-cursor');
+    const text   = document.getElementById('ob-imb-text');
+    if(!cursor || !text) return;
+    const pct = (ratio * 100).toFixed(1);
+    cursor.style.left = pct + '%';
+    const buyPct  = pct;
+    const sellPct = (100 - parseFloat(pct)).toFixed(1);
+    const color = ratio > 0.6 ? '#00e676' : (ratio < 0.4 ? '#ff4444' : '#94a3b8');
+    text.style.color = color;
+    text.textContent = buyPct + '% acheteurs / ' + sellPct + '% vendeurs';
+  }
+
+  // Ajoute une carte signal SMC dans le flux OB
+  function _obAddSignal(sig){
+    const list = document.getElementById('ob-signals-list');
+    if(!list) return;
+
+    // Vider le placeholder initial
+    if(list.children.length === 1 && list.children[0].textContent.includes('attente')){
+      list.innerHTML = '';
+    }
+
+    const type   = (sig.signal_type || '').toLowerCase();
+    const isBuy  = type.includes('buy');
+    const isWall = type.includes('wall');
+    const isAbso = type.includes('absorption');
+    const isImb  = type.includes('imbalance');
+
+    // Classe CSS dynamique
+    let cssClass = 'ob-signal-item';
+    if(isWall) cssClass += ' ob-sig-wall';
+    else if(isBuy) cssClass += ' ob-sig-wall_buy';
+    else cssClass += ' ob-sig-wall_sell';
+
+    const icon   = isBuy ? '▲' : '▼';
+    const iconCl = isBuy ? 'color:#00e676' : 'color:#ff4444';
+    const strength = sig.strength != null ? (sig.strength * 100).toFixed(0) + '%' : '—';
+
+    const div = document.createElement('div');
+    div.className = cssClass;
+    div.innerHTML =
+      `<div style="display:flex;justify-content:space-between;align-items:center">` +
+        `<span class="ob-sig-label"><span style="${iconCl}">${icon}</span> ${(sig.signal_type||'').replace(/_/g,' ')}</span>` +
+        `<span class="ob-sig-strength">${strength}</span>` +
+      `</div>` +
+      `<div class="ob-sig-desc">${sig.description || ''}</div>` +
+      `<div class="ob-sig-ctx">${sig.smc_context || ''} · ${_obFmtPrice(sig.price||0)}</div>`;
+
+    list.insertBefore(div, list.firstChild);
+    // Garder max 12 signaux visibles
+    while(list.children.length > 12) list.removeChild(list.lastChild);
+
+    // Mise à jour des compteurs
+    if(isWall)  { _ob.stats.walls++; document.getElementById('ob-stat-walls').textContent = _ob.stats.walls; }
+    if(isImb)   { _ob.stats.imbalances++; document.getElementById('ob-stat-imb').textContent = _ob.stats.imbalances; }
+    if(isAbso)  { _ob.stats.absorptions++; document.getElementById('ob-stat-abs').textContent = _ob.stats.absorptions; }
+  }
+
+  // Met à jour le dot de connexion OB
+  function _obSetDot(active){
+    const dot = document.getElementById('ob-ws-dot');
+    if(!dot) return;
+    dot.style.background  = active ? '#00e676' : '#475569';
+    dot.style.boxShadow   = active ? '0 0 6px #00e676' : 'none';
+  }
+
+  // Point d'entrée : appelé depuis le dispatcher WS principal
+  window._ob_handleBookUpdate = function(msg){
+    if(!msg || !msg.data) return;
+
+    const data   = msg.data;
+    const symbol = msg.symbol || '—';
+
+    // Allume le dot de connexion
+    _obSetDot(true);
+
+    // Mise à jour du label symbole
+    const symLabel = document.getElementById('ob-sym-label');
+    if(symLabel) symLabel.textContent = symbol;
+
+    // Heure de dernière mise à jour
+    const updEl = document.getElementById('ob-last-update');
+    if(updEl) updEl.textContent = new Date().toLocaleTimeString();
+
+    // Best bid / ask / spread
+    const bbEl = document.getElementById('ob-best-bid');
+    const baEl = document.getElementById('ob-best-ask');
+    const spEl = document.getElementById('ob-spread');
+    if(bbEl) bbEl.textContent = _obFmtPrice(data.best_bid || (data.bids?.[0]?.[0] || 0));
+    if(baEl) baEl.textContent = _obFmtPrice(data.best_ask || (data.asks?.[0]?.[0] || 0));
+    if(spEl) spEl.textContent = (data.spread != null ? data.spread.toFixed(2) : '—');
+
+    // Volumes totaux
+    const bvEl = document.getElementById('ob-bid-vol');
+    const avEl = document.getElementById('ob-ask-vol');
+    if(bvEl) bvEl.textContent = _obFmtVol(data.total_bid_vol || 0);
+    if(avEl) avEl.textContent = _obFmtVol(data.total_ask_vol || 0);
+
+    // Rendu du carnet
+    if(data.bids && data.asks) _obRenderBook(data.bids, data.asks);
+
+    // Imbalance
+    if(data.imbalance != null) _obUpdateImbalance(data.imbalance);
+
+    // Signaux SMC reçus avec ce tick
+    if(msg.signals && msg.signals.length > 0){
+      msg.signals.forEach(sig => _obAddSignal(sig));
+    }
+
+    // Réinitialise le dot en gris après 2s si plus de données
+    clearTimeout(_ob._dotTimer);
+    _ob._dotTimer = setTimeout(()=>_obSetDot(false), 2000);
+  };
+
+  // Initialisation : dot inactif par défaut
+  _obSetDot(false);
+
+})(); // fin MODULE 20
 </script>
 </body>
 </html>
