@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 """
-Titanium Dashboard v7 — OPTIMISÉ POUR LA PERFORMANCE
+Titanium Dashboard v8 — ORDER BOOK ENGINE INTÉGRÉ
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[v8] Intégration TitaniumOrderBookEngine :
+     [OB-1] Carnet d'ordres Niveau 2 en temps réel (Binance Futures WS)
+     [OB-2] Simulation hybride réaliste Gold (XAUUSD) via mouvement brownien
+     [OB-3] Détection SMC : Murs (WALL_BUY/SELL), Imbalance, Absorption
+     [OB-4] Broadcast BOOK_UPDATE via WS existant /ws/{symbol} (port 8080)
+     [OB-5] Endpoint REST /api/orderbook/{symbol} + /api/orderbook/signals
+     [OB-6] Suppression du serveur WS séparé (port 8765) — unifié port 8080
 [v7] Optimisations de performance :
      [OPT-1] Vectorisation NumPy + Numba JIT pour backtests (×10 vitesse)
      [OPT-2] Cache LRU pour détections FVG/OB (TTL 30s, ×5 rapidité)
@@ -38,12 +45,14 @@ import json
 import logging
 import multiprocessing
 import os
+import time
 import traceback
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from functools import lru_cache
 from collections import deque as _deque
 
@@ -94,7 +103,7 @@ logger = logging.getLogger("titanium_dashboard")
 
 
 # ---------------------------------------------------------------------------
-# CONFIG OPTIMISÉE [v7]
+# CONFIG OPTIMISÉE [v8]
 # ---------------------------------------------------------------------------
 SYMBOLS = [s.strip() for s in os.getenv("BINANCE_SYMBOLS", "BTC/USDT,ETH/USDT,SOL/USDT,PAXG/USDT").split(",") if s.strip()]
 
@@ -102,6 +111,24 @@ WS_BASE = "wss://stream.binance.com:9443"
 WS_BASES = [x.strip() for x in os.getenv("WS_BASES", "wss://stream.binance.com:9443,wss://stream.binance.com:443,wss://data-stream.binance.vision").split(",") if x.strip()]
 REST_BASE = "https://api.binance.com"
 REST_FALLBACK = "https://data-api.binance.vision"
+
+# ---------------------------------------------------------------------------
+# ORDER BOOK ENGINE [v8] — Carnet d'ordres N2 en temps réel
+# ---------------------------------------------------------------------------
+OB_ENABLED          = os.getenv("OB_ENABLED", "1").strip().lower() in ("1","true","yes","on")
+OB_BINANCE_WS_URL   = "wss://fstream.binance.com/ws"
+# Symboles avec leur stream Binance Futures (depth20@100ms)
+OB_SYMBOL_MAP: Dict[str, Dict[str, str]] = {
+    "BTC/USDT":  {"exchange": "binance", "stream": "btcusdt@depth20@100ms"},
+    "ETH/USDT":  {"exchange": "binance", "stream": "ethusdt@depth20@100ms"},
+    "SOL/USDT":  {"exchange": "binance", "stream": "solusdt@depth20@100ms"},
+    "PAXG/USDT": {"exchange": "hybrid",  "stream": "simulation"},   # Gold → simulation réaliste
+}
+OB_WALL_THRESHOLD    = float(os.getenv("OB_WALL_THRESHOLD",    "0.05"))   # 5% du volume total
+OB_IMBALANCE_THRESH  = float(os.getenv("OB_IMBALANCE_THRESH",  "0.75"))   # 75% d'imbalance
+OB_ABSORPTION_WINDOW = int(os.getenv("OB_ABSORPTION_WINDOW",   "10"))     # nb snapshots pour absorption
+OB_HISTORY_MAXLEN    = int(os.getenv("OB_HISTORY_MAXLEN",      "200"))    # snapshots gardés par symbole
+OB_SIGNALS_MAXLEN    = int(os.getenv("OB_SIGNALS_MAXLEN",      "50"))     # signaux SMC gardés
 
 # [OPT-3] Pool de connexions HTTP optimisé [v7]
 HTTP_POOL_SIZE = int(os.getenv("HTTP_POOL_SIZE", "50"))  # ↑ de défaut à 50
@@ -504,7 +531,6 @@ gold_store:     Dict[str, pd.DataFrame] = {}   # bougies Gold réel (pour PAXG u
 # Delta Volume (aggTrade) — pression acheteur/vendeur en temps réel
 # Structure: {sym: {"buy_vol": float, "sell_vol": float, "delta": float,
 #                   "delta_pct": float, "bullish": bool, "bearish": bool}}
-from collections import deque as _deque
 _delta_vol: Dict[str, dict] = {
     s: {
         "buy_vol":   0.0,
@@ -4600,10 +4626,303 @@ async def broadcast(sym: str, payload: dict):
 
 
 # ---------------------------------------------------------------------------
+# MODULE 20 — TITANIUM ORDER BOOK ENGINE [v8]
+# Carnet d'ordres Niveau 2 en temps réel (intégré — sans port séparé)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class MarketSignalOB:
+    timestamp: float
+    symbol: str
+    signal_type: str
+    price: float
+    value: float
+    description: str
+    strength: float
+    smc_context: str = ""
+
+
+@dataclass
+class OrderBookState:
+    bids: Dict[float, float] = field(default_factory=dict)
+    asks: Dict[float, float] = field(default_factory=dict)
+    last_update: float = 0.0
+    imbalance: float = 0.0
+    total_bid_vol: float = 0.0
+    total_ask_vol: float = 0.0
+    best_bid: float = 0.0
+    best_ask: float = 0.0
+
+
+class TitaniumOrderBookEngine:
+    """
+    Moteur de carnet d'ordres Niveau 2 — intégré dans le backend v8.
+    - Connexion WebSocket Binance Futures pour BTC, ETH, SOL
+    - Simulation hybride réaliste pour le Gold (PAXG/USDT → XAUUSD)
+    - Détection de signaux SMC (Murs, Imbalance, Absorption)
+    - Broadcast via le WS existant FastAPI /ws/{symbol} (type: BOOK_UPDATE)
+    """
+
+    def __init__(self, symbols: List[str]):
+        self.symbols = symbols
+        self.books: Dict[str, OrderBookState] = {s: OrderBookState() for s in symbols}
+        self.history: Dict[str, _deque] = {s: _deque(maxlen=OB_HISTORY_MAXLEN) for s in symbols}
+        self.signals: _deque = _deque(maxlen=OB_SIGNALS_MAXLEN)
+        self.running = False
+
+    async def start(self, session: aiohttp.ClientSession):
+        """Démarre toutes les tâches du moteur order book."""
+        self.running = True
+        tasks = []
+        for symbol in self.symbols:
+            config = OB_SYMBOL_MAP.get(symbol)
+            if not config:
+                logger.warning("[OB] Symbole %s non configuré dans OB_SYMBOL_MAP", symbol)
+                continue
+            if config["exchange"] == "binance":
+                tasks.append(asyncio.create_task(
+                    self._connect_binance(session, symbol, config["stream"])
+                ))
+            elif config["exchange"] == "hybrid":
+                tasks.append(asyncio.create_task(
+                    self._simulate_gold_stream(symbol)
+                ))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def stop(self):
+        self.running = False
+        logger.info("[OB] Moteur order book arrêté.")
+
+    def get_book_snapshot(self, symbol: str) -> dict:
+        """Retourne un snapshot JSON-sérialisable du carnet pour /api/orderbook/{symbol}."""
+        book = self.books.get(symbol)
+        if not book:
+            return {}
+        return {
+            "symbol": symbol,
+            "bids": [[p, q] for p, q in sorted(book.bids.items(), reverse=True)],
+            "asks": [[p, q] for p, q in sorted(book.asks.items())],
+            "imbalance": round(book.imbalance, 4),
+            "spread": round(book.best_ask - book.best_bid, 4) if book.best_ask and book.best_bid else 0.0,
+            "best_bid": book.best_bid,
+            "best_ask": book.best_ask,
+            "total_bid_vol": round(book.total_bid_vol, 2),
+            "total_ask_vol": round(book.total_ask_vol, 2),
+            "last_update": book.last_update,
+        }
+
+    def get_recent_signals(self, symbol: Optional[str] = None, limit: int = 20) -> List[dict]:
+        """Retourne les signaux SMC récents, filtrés par symbole si précisé."""
+        sigs = list(self.signals)
+        if symbol:
+            sigs = [s for s in sigs if s.symbol == symbol]
+        return [asdict(s) for s in sigs[-limit:]]
+
+    async def _connect_binance(self, session: aiohttp.ClientSession, symbol: str, stream_name: str):
+        """Connexion WebSocket Binance Futures avec reconnexion exponentielle."""
+        url = f"{OB_BINANCE_WS_URL}/{stream_name}"
+        logger.info("[OB][%s] Connexion Binance Futures WS: %s", symbol, url)
+        reconnect_delay = 5
+        while self.running:
+            try:
+                async with session.ws_connect(url, heartbeat=20) as ws:
+                    logger.info("[OB][%s] Connecté à Binance Futures", symbol)
+                    reconnect_delay = 5
+                    async for msg in ws:
+                        if not self.running:
+                            break
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            data = json.loads(msg.data)
+                            await self._process_update(symbol, data)
+                        elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                            logger.warning("[OB][%s] WS fermé/erreur, reconnexion...", symbol)
+                            break
+            except Exception as e:
+                logger.error("[OB][%s] Exception: %s — retry dans %ds", symbol, e, reconnect_delay)
+                if self.running:
+                    await asyncio.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 2, 60)
+
+    async def _simulate_gold_stream(self, symbol: str):
+        """Simulation réaliste du carnet PAXG/USDT (proxy Gold XAU/USD)."""
+        logger.info("[OB][%s] Démarrage flux hybride Gold (simulation)", symbol)
+        base_price = 2350.00
+        while self.running:
+            noise = np.random.normal(0, 0.4)
+            trend = np.sin(time.time() / 30) * 0.3
+            base_price += noise + trend
+
+            bids: Dict[float, float] = {}
+            asks: Dict[float, float] = {}
+            for i in range(1, 21):
+                bid_p = round(base_price - i * 0.1, 1)
+                ask_p = round(base_price + i * 0.1, 1)
+                base_vol = float(np.random.exponential(30))
+                bids[bid_p] = round(base_vol * (1 - i / 40), 2)
+                asks[ask_p] = round(base_vol * (1 - i / 40), 2)
+
+            # Murs aléatoires (5% de chance)
+            if np.random.random() > 0.95:
+                wp = round(base_price - float(np.random.choice([1.0, 1.5, 2.0])), 1)
+                bids[wp] = round(np.random.uniform(300, 800), 2)
+            if np.random.random() > 0.95:
+                wp = round(base_price + float(np.random.choice([1.0, 1.5, 2.0])), 1)
+                asks[wp] = round(np.random.uniform(300, 800), 2)
+
+            fake_data = {
+                "bids": [[p, q] for p, q in sorted(bids.items(), reverse=True)],
+                "asks": [[p, q] for p, q in sorted(asks.items())],
+            }
+            await self._process_update(symbol, fake_data)
+            await asyncio.sleep(0.2)
+
+    async def _process_update(self, symbol: str, data: dict):
+        """Traite une mise à jour du carnet et broadcast via le WS FastAPI."""
+        if "bids" not in data or "asks" not in data:
+            return
+
+        book = self.books[symbol]
+        ts = time.time()
+
+        new_bids = {float(p): float(q) for p, q in (data["bids"] or [])[:20]}
+        new_asks = {float(p): float(q) for p, q in (data["asks"] or [])[:20]}
+        if not new_bids or not new_asks:
+            return
+
+        book.total_bid_vol = sum(new_bids.values())
+        book.total_ask_vol = sum(new_asks.values())
+        total_vol = book.total_bid_vol + book.total_ask_vol
+        book.imbalance = book.total_bid_vol / total_vol if total_vol > 0 else 0.5
+        book.best_bid = max(new_bids.keys())
+        book.best_ask = min(new_asks.keys())
+        book.bids = new_bids
+        book.asks = new_asks
+        book.last_update = ts
+
+        snapshot = {
+            "time": ts,
+            "price": (book.best_bid + book.best_ask) / 2,
+            "imbalance": book.imbalance,
+            "bid_vol": book.total_bid_vol,
+            "ask_vol": book.total_ask_vol,
+        }
+        self.history[symbol].append(snapshot)
+
+        ob_signals = await self._analyze_smc(symbol, snapshot)
+        for sig in ob_signals:
+            self.signals.appendleft(sig)
+
+        # Broadcast via le mécanisme WS existant du dashboard
+        payload = {
+            "type": "BOOK_UPDATE",
+            "symbol": symbol,
+            "data": {
+                "bids": [[p, q] for p, q in sorted(book.bids.items(), reverse=True)],
+                "asks": [[p, q] for p, q in sorted(book.asks.items())],
+                "imbalance": book.imbalance,
+                "spread": round(book.best_ask - book.best_bid, 4),
+                "best_bid": book.best_bid,
+                "best_ask": book.best_ask,
+                "total_bid_vol": round(book.total_bid_vol, 2),
+                "total_ask_vol": round(book.total_ask_vol, 2),
+                "last_update": ts,
+            },
+            "signals": [asdict(s) for s in ob_signals],
+        }
+        # Utilise le broadcast FastAPI existant (clé = rest_sym du symbole)
+        await broadcast(rest_sym(symbol), payload)
+
+    async def _analyze_smc(self, symbol: str, current: dict) -> List[MarketSignalOB]:
+        """Analyse SMC : détection Murs, Imbalance extrême, Absorption."""
+        signals: List[MarketSignalOB] = []
+        history = list(self.history[symbol])
+        if len(history) < 10:
+            return signals
+
+        book = self.books[symbol]
+        ts = current["time"]
+
+        # 1. Détection MURS (Wall)
+        if book.bids:
+            max_bid_qty = max(book.bids.values())
+            if max_bid_qty > book.total_bid_vol * OB_WALL_THRESHOLD:
+                price = next(p for p, q in book.bids.items() if q == max_bid_qty)
+                signals.append(MarketSignalOB(
+                    timestamp=ts, symbol=symbol, signal_type="WALL_BUY",
+                    price=price, value=max_bid_qty,
+                    description=f"Mur d'achat massif détecté à {price}",
+                    strength=min(1.0, max_bid_qty / (book.total_bid_vol * 0.1)),
+                    smc_context="Support Institutionnel Potentiel",
+                ))
+
+        if book.asks:
+            max_ask_qty = max(book.asks.values())
+            if max_ask_qty > book.total_ask_vol * OB_WALL_THRESHOLD:
+                price = next(p for p, q in book.asks.items() if q == max_ask_qty)
+                signals.append(MarketSignalOB(
+                    timestamp=ts, symbol=symbol, signal_type="WALL_SELL",
+                    price=price, value=max_ask_qty,
+                    description=f"Mur de vente massif détecté à {price}",
+                    strength=min(1.0, max_ask_qty / (book.total_ask_vol * 0.1)),
+                    smc_context="Résistance Institutionnelle Potentielle",
+                ))
+
+        # 2. Imbalance Extrême
+        imb = current["imbalance"]
+        if imb > OB_IMBALANCE_THRESH:
+            signals.append(MarketSignalOB(
+                timestamp=ts, symbol=symbol, signal_type="IMBALANCE_BUY",
+                price=book.best_bid, value=imb,
+                description=f"Pression acheteuse extrême ({imb:.1%})",
+                strength=(imb - 0.5) * 2,
+                smc_context="Dislocation du prix imminente",
+            ))
+        elif imb < (1 - OB_IMBALANCE_THRESH):
+            signals.append(MarketSignalOB(
+                timestamp=ts, symbol=symbol, signal_type="IMBALANCE_SELL",
+                price=book.best_ask, value=1 - imb,
+                description=f"Pression vendeuse extrême ({1-imb:.1%})",
+                strength=((1 - imb) - 0.5) * 2,
+                smc_context="Chute de prix imminente",
+            ))
+
+        # 3. Absorption
+        recent = history[-OB_ABSORPTION_WINDOW:]
+        if len(recent) >= OB_ABSORPTION_WINDOW:
+            p_start = recent[0]["price"]
+            p_end   = recent[-1]["price"]
+            vol_sold   = sum(h["ask_vol"] for h in recent)
+            vol_bought = sum(h["bid_vol"] for h in recent)
+
+            if vol_sold > book.total_ask_vol * 3 and p_end >= p_start * 0.9995:
+                signals.append(MarketSignalOB(
+                    timestamp=ts, symbol=symbol, signal_type="ABSORPTION_BUY",
+                    price=book.best_bid, value=vol_sold,
+                    description="Absorption : vente massive ignorée par le marché",
+                    strength=0.85, smc_context="Accumulation Smart Money",
+                ))
+            if vol_bought > book.total_bid_vol * 3 and p_end <= p_start * 1.0005:
+                signals.append(MarketSignalOB(
+                    timestamp=ts, symbol=symbol, signal_type="ABSORPTION_SELL",
+                    price=book.best_ask, value=vol_bought,
+                    description="Absorption : achat massif absorbé sans hausse",
+                    strength=0.85, smc_context="Distribution Smart Money",
+                ))
+
+        return signals
+
+
+# Singleton global du moteur order book (initialisé dans le lifespan)
+_ob_engine: Optional[TitaniumOrderBookEngine] = None
+
+
+# ---------------------------------------------------------------------------
 # FastAPI app + lifespan (Module 16)
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _ob_engine
     # Chargement de l'état d'apprentissage (Module 4)
     _load_learning_state()
     logger.info("[LEARNING] État chargé — %s symboles", len(SYMBOLS))
@@ -4618,6 +4937,16 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(learning_report_loop(session)),   # ← Module 4
         asyncio.create_task(optimisation_loop()),             # ← Module 18
     ]
+
+    # [v8] MODULE 20 — Démarrage du moteur Order Book
+    if OB_ENABLED:
+        _ob_engine = TitaniumOrderBookEngine(SYMBOLS)
+        app.state.ob_engine = _ob_engine
+        tasks.append(asyncio.create_task(_ob_engine.start(session)))
+        logger.info("[OB] TitaniumOrderBookEngine démarré — %d symboles", len(SYMBOLS))
+    else:
+        app.state.ob_engine = None
+        logger.info("[OB] Order Book Engine désactivé (OB_ENABLED=0)")
 
     if STRICT_OFFLOAD_PROCESS:
         # Windows safe: spawn
@@ -5382,6 +5711,84 @@ async def get_gold_status(req: FARequest):
 
 
 # ---------------------------------------------------------------------------
+# MODULE 20 — Routes Order Book [v8]
+# ---------------------------------------------------------------------------
+
+@app.get("/api/orderbook/{symbol}")
+async def get_orderbook(symbol: str, req: FARequest):
+    """Snapshot du carnet d'ordres N2 pour un symbole donné."""
+    engine: Optional[TitaniumOrderBookEngine] = getattr(req.app.state, "ob_engine", None)
+    if not engine:
+        raise HTTPException(status_code=503, detail="Order Book Engine désactivé")
+
+    # Normalise : BTCUSDT → BTC/USDT
+    sym_ui = symbol.upper()
+    # Cherche correspondance dans les symboles connus
+    matched = None
+    for s in engine.symbols:
+        if rest_sym(s) == sym_ui or s.upper() == sym_ui:
+            matched = s
+            break
+    if not matched:
+        raise HTTPException(status_code=404, detail=f"Symbole {symbol} non suivi par le moteur")
+
+    snapshot = engine.get_book_snapshot(matched)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail=f"Aucune donnée order book pour {matched}")
+    return snapshot
+
+
+@app.get("/api/orderbook/{symbol}/signals")
+async def get_orderbook_signals(symbol: str, limit: int = 20, req: FARequest = None):
+    """Signaux SMC (Murs, Imbalance, Absorption) pour un symbole donné."""
+    engine: Optional[TitaniumOrderBookEngine] = getattr(req.app.state, "ob_engine", None) if req else _ob_engine
+    if not engine:
+        raise HTTPException(status_code=503, detail="Order Book Engine désactivé")
+
+    sym_ui = symbol.upper()
+    matched = next((s for s in engine.symbols if rest_sym(s) == sym_ui or s.upper() == sym_ui), None)
+    return {"symbol": symbol, "signals": engine.get_recent_signals(matched, limit=limit)}
+
+
+@app.get("/api/orderbook/signals/all")
+async def get_all_ob_signals(limit: int = 50, req: FARequest = None):
+    """Tous les signaux SMC Order Book récents (tous symboles confondus)."""
+    engine: Optional[TitaniumOrderBookEngine] = getattr(req.app.state, "ob_engine", None) if req else _ob_engine
+    if not engine:
+        raise HTTPException(status_code=503, detail="Order Book Engine désactivé")
+    return {"signals": engine.get_recent_signals(symbol=None, limit=limit)}
+
+
+@app.get("/api/orderbook/status")
+async def get_orderbook_status(req: FARequest):
+    """Statut du moteur Order Book — état des carnets par symbole."""
+    engine: Optional[TitaniumOrderBookEngine] = getattr(req.app.state, "ob_engine", None)
+    if not engine:
+        return {"enabled": False, "symbols": []}
+
+    books_status = {}
+    for sym in engine.symbols:
+        book = engine.books.get(sym)
+        books_status[sym] = {
+            "active": book is not None and book.last_update > 0,
+            "last_update": book.last_update if book else 0,
+            "best_bid": book.best_bid if book else 0,
+            "best_ask": book.best_ask if book else 0,
+            "imbalance": round(book.imbalance, 4) if book else 0,
+            "history_size": len(engine.history.get(sym, [])),
+        }
+    return {
+        "enabled": OB_ENABLED,
+        "symbols": engine.symbols,
+        "books": books_status,
+        "total_signals": len(engine.signals),
+        "wall_threshold": OB_WALL_THRESHOLD,
+        "imbalance_threshold": OB_IMBALANCE_THRESH,
+        "absorption_window": OB_ABSORPTION_WINDOW,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Entry point (Module 17)
 # ---------------------------------------------------------------------------
 def main():
@@ -5392,11 +5799,11 @@ def main():
     ssl_keyfile = os.getenv("SSL_KEYFILE", "").strip() or None
 
     print("=" * 70)
-    print("TITANIUM DASHBOARD v7 — SMC LIVE · Score /9 · 1D Bias · Delta Vol · Futures OI · OANDA XAU · API Key Read-Only")
+    print("TITANIUM DASHBOARD v8 — SMC LIVE · Order Book N2 · Score /9 · 1D Bias · Delta Vol · Futures OI · Gold XAU · API Key Read-Only")
     print("URL: http://localhost:8080")
     print("Bridge actif:", ENABLE_BRIDGE)
     print("Vision primary:", VISION_MODEL_PRIMARY, "| fallback:", VISION_MODEL_FALLBACK)
-    print(f"SCORING: /9 (v7 +EMA200_1D +DELTA_VOL) | RSI seuils: LONG≤{RSI_ENTRY_LONG} SHORT≥{RSI_ENTRY_SHORT} | Fib=[{FIB_LEVEL_LOW},{FIB_LEVEL_HIGH}] dynamique={OB_FVG_FIB_DYNAMIC}")
+    print(f"SCORING: /9 (v8 +EMA200_1D +DELTA_VOL +OB_ENGINE) | RSI seuils: LONG≤{RSI_ENTRY_LONG} SHORT≥{RSI_ENTRY_SHORT} | Fib=[{FIB_LEVEL_LOW},{FIB_LEVEL_HIGH}] dynamique={OB_FVG_FIB_DYNAMIC}")
     print(f"STRICT: tf={STRICT_TF} | iters={STRICT_RANDOM_ITERS} | in_sample={STRICT_IN_SAMPLE_DAYS}j | recalib={STRICT_RECALIB_DAYS}j | sharpe_floor={STRICT_SHARPE_FLOOR}")
     print(f"LEARNING: report_every={LEARNING_REPORT_EVERY//3600}h | min_signals={LEARNING_MIN_SIGNALS} | adapt_rate={LEARNING_ADAPT_RATE}")
     print(f"SL/TP: adaptatif ATR clampé (p20–p80) | frais Binance 4bps | TP ratios 1.2/1.8/2.4 | 4 TPs max")
@@ -5411,6 +5818,7 @@ def main():
     for sym_ov, ov in SYM_OVERRIDES.items():
         print(f"  [{sym_ov}] ATR×{ov.get('atr_mult')} | TP={ov.get('tp_ratios')} | RSI {ov.get('rsi_long')}/{ov.get('rsi_short')} | score_min={ov.get('score_min')} | {len(OPT_CONFIGURATIONS_PAXG)} configs dédiées")
     print(f"WS: compress={WS_COMPRESS} | min_bytes={WS_COMPRESS_MIN_BYTES}")
+    print(f"ORDER BOOK [v8]: {'✅ activé — wall={:.0%} | imbalance={:.0%} | absorption_window={}'.format(OB_WALL_THRESHOLD, OB_IMBALANCE_THRESH, OB_ABSORPTION_WINDOW) if OB_ENABLED else '⚠️  désactivé (OB_ENABLED=0)'} | endpoints=/api/orderbook/{{symbol}}")
     print("=" * 70)
 
     uvicorn.run(
