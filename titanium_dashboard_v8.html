@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Titanium Dashboard V8 - Order Flow & SMC</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-dark: #0f172a;
+            --panel-bg: #1e293b;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --accent-blue: #3b82f6;
+            --wall-buy: rgba(16, 185, 129, 0.3);
+            --wall-sell: rgba(239, 68, 68, 0.3);
+        }
+        body { background-color: var(--bg-dark); color: var(--text-primary); font-family: 'Inter', sans-serif; }
+        .glass-panel { background: var(--panel-bg); border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(10px); border-radius: 12px; }
+        .order-row { display: flex; justify-content: space-between; padding: 4px 8px; font-size: 0.85rem; }
+        .bar-container { position: absolute; top: 0; bottom: 0; z-index: 0; opacity: 0.6; transition: width 0.3s ease; }
+        .bar-buy { background-color: var(--wall-buy); right: 0; }
+        .bar-sell { background-color: var(--wall-sell); left: 0; }
+        .signal-card { border-left: 4px solid transparent; animation: slideIn 0.5s ease-out; }
+        .signal-buy { border-left-color: var(--accent-green); }
+        .signal-sell { border-left-color: var(--accent-red); }
+        @keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .pulse-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; animation: pulse 2s infinite; }
+        .bg-green-glow { background-color: var(--accent-green); box-shadow: 0 0 10px var(--accent-green); }
+        .bg-red-glow { background-color: var(--accent-red); box-shadow: 0 0 10px var(--accent-red); }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg-dark); }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+    </style>
+</head>
+<body class="h-screen overflow-hidden flex flex-col">
+
+    <!-- Header -->
+    <header class="h-16 border-b border-gray-800 flex items-center justify-between px-6 bg-slate-900">
+        <div class="flex items-center gap-3">
+            <div class="w-3 h-3 rounded-full bg-blue-500 pulse-dot"></div>
+            <h1 class="text-xl font-bold tracking-wider">TITANIUM <span class="text-blue-500">V8</span> ORDER FLOW</h1>
+            <span class="text-xs bg-slate-800 px-2 py-1 rounded text-gray-400">SMC + Level 2</span>
+        </div>
+        <div class="flex items-center gap-4">
+            <select id="assetSelector" class="bg-slate-800 border border-gray-700 rounded px-3 py-1 text-sm focus:outline-none focus:border-blue-500">
+                <option value="BTCUSDT">BTC/USDT</option>
+                <option value="ETHUSDT">ETH/USDT</option>
+                <option value="SOLUSDT">SOL/USDT</option>
+            </select>
+            <div class="flex items-center gap-2 text-xs">
+                <span class="text-gray-400">Latence:</span>
+                <span id="latencyDisplay" class="text-green-400 font-mono">-- ms</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-1 grid grid-cols-12 gap-4 p-4 overflow-hidden">
+        
+        <!-- Left Panel: Order Book Heatmap (4 cols) -->
+        <section class="col-span-12 md:col-span-4 lg:col-span-3 glass-panel flex flex-col">
+            <div class="p-3 border-b border-gray-800 flex justify-between items-center">
+                <h2 class="font-semibold text-sm">Carnet d'Ordres (L2)</h2>
+                <span class="text-xs text-gray-500">Top 20 Niveaux</span>
+            </div>
+            
+            <div class="flex-1 overflow-y-auto relative" id="orderBookContainer">
+                <!-- En-têtes -->
+                <div class="sticky top-0 bg-slate-800 z-10 grid grid-cols-3 text-xs text-gray-400 p-2 font-mono">
+                    <div class="text-right">Qté (Ask)</div>
+                    <div class="text-center">Prix</div>
+                    <div class="text-left">Qté (Bid)</div>
+                </div>
+                
+                <!-- Asks (Ventes) -->
+                <div id="asksList" class="flex flex-col-reverse"></div>
+                
+                <!-- Spread Indicator -->
+                <div class="py-2 text-center text-xs font-bold text-gray-500 border-y border-gray-800 bg-slate-900/50">
+                    <span id="spreadValue">--</span> Spread
+                </div>
+
+                <!-- Bids (Achats) -->
+                <div id="bidsList"></div>
+            </div>
+
+            <!-- Imbalance Gauge -->
+            <div class="p-4 border-t border-gray-800">
+                <div class="flex justify-between text-xs mb-1">
+                    <span class="text-green-400">Acheteurs</span>
+                    <span class="text-gray-400">Imbalance</span>
+                    <span class="text-red-400">Vendeurs</span>
+                </div>
+                <div class="h-4 bg-gray-800 rounded-full overflow-hidden relative">
+                    <div id="imbalanceBar" class="h-full bg-gradient-to-r from-red-500 via-gray-500 to-green-500 w-full transition-all duration-300"></div>
+                    <div id="imbalanceMarker" class="absolute top-0 bottom-0 w-1 bg-white shadow-lg transition-all duration-300" style="left: 50%;"></div>
+                </div>
+                <div class="text-center mt-2 text-sm font-mono" id="imbalanceText">50% / 50%</div>
+            </div>
+        </section>
+
+        <!-- Center Panel: Chart & Signals (6 cols) -->
+        <section class="col-span-12 md:col-span-8 lg:col-span-6 flex flex-col gap-4">
+            <!-- Chart Placeholder (Intégration TradingView future) -->
+            <div class="glass-panel flex-1 flex items-center justify-center relative overflow-hidden group">
+                <div class="absolute inset-0 bg-gradient-to-br from-blue-900/10 to-purple-900/10"></div>
+                <div class="text-center z-10">
+                    <h3 class="text-2xl font-bold text-gray-300 mb-2">Graphique Temps Réel</h3>
+                    <p class="text-gray-500 text-sm">Module TradingView Lightweight Charts<br>En attente de flux de prix...</p>
+                    <div class="mt-4 flex justify-center gap-2">
+                        <span class="px-3 py-1 bg-slate-800 rounded text-xs text-blue-400">SMC Active</span>
+                        <span class="px-3 py-1 bg-slate-800 rounded text-xs text-green-400">Order Flow</span>
+                    </div>
+                </div>
+                <!-- Overlay Signaux sur chart (Simulation) -->
+                <div id="chartOverlay" class="absolute top-4 right-4 flex flex-col gap-2"></div>
+            </div>
+
+            <!-- Smart Money Signals Feed -->
+            <div class="glass-panel h-1/3 flex flex-col">
+                <div class="p-3 border-b border-gray-800 flex justify-between items-center">
+                    <h2 class="font-semibold text-sm flex items-center gap-2">
+                        <span class="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+                        Flux Signaux Smart Money
+                    </h2>
+                    <span class="text-xs text-gray-500">Détection: Murs, Absorption, Fakeouts</span>
+                </div>
+                <div id="signalsFeed" class="flex-1 overflow-y-auto p-2 space-y-2">
+                    <!-- Les signaux seront injectés ici -->
+                    <div class="text-center text-gray-600 text-sm py-8 italic">En écoute des mouvements du marché...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Right Panel: Strategy Stats & Controls (3 cols) -->
+        <section class="col-span-12 lg:col-span-3 glass-panel flex flex-col">
+            <div class="p-3 border-b border-gray-800">
+                <h2 class="font-semibold text-sm">Statistiques Stratégie</h2>
+            </div>
+            <div class="p-4 space-y-4 flex-1 overflow-y-auto">
+                
+                <!-- Stat Card 1 -->
+                <div class="bg-slate-800/50 p-3 rounded border border-gray-700">
+                    <div class="text-xs text-gray-400 mb-1">Murs Détectés (1h)</div>
+                    <div class="text-2xl font-bold text-white" id="statWalls">0</div>
+                    <div class="flex gap-2 mt-2 text-xs">
+                        <span class="text-green-400">Achat: <span id="statWallsBuy">0</span></span>
+                        <span class="text-red-400">Vente: <span id="statWallsSell">0</span></span>
+                    </div>
+                </div>
+
+                <!-- Stat Card 2 -->
+                <div class="bg-slate-800/50 p-3 rounded border border-gray-700">
+                    <div class="text-xs text-gray-400 mb-1">Absorptions Repérées</div>
+                    <div class="text-2xl font-bold text-blue-400" id="statAbsorptions">0</div>
+                    <p class="text-xs text-gray-500 mt-1">Indique une résistance au mouvement</p>
+                </div>
+
+                <!-- Strategy Config -->
+                <div class="mt-4 pt-4 border-t border-gray-700">
+                    <h3 class="text-xs font-bold text-gray-300 mb-2 uppercase">Paramètres Détection</h3>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Seuil Mur (%)</label>
+                            <input type="range" min="1" max="20" value="5" class="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                        </div>
+                        <div>
+                            <label class="text-xs text-gray-400 block mb-1">Sensibilité Imbalance</label>
+                            <input type="range" min="50" max="90" value="70" class="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer">
+                        </div>
+                        <button class="w-full bg-blue-600 hover:bg-blue-700 text-white text-xs py-2 rounded transition">
+                            Appliquer & Recalibrer
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Last Analysis -->
+                <div class="mt-auto bg-slate-900 p-3 rounded border border-gray-800">
+                    <div class="text-xs text-gray-500 mb-1">Dernière Analyse IA</div>
+                    <div class="text-xs text-green-400 font-mono">Modèle: Qwen2.5-VL</div>
+                    <div class="text-xs text-gray-400 mt-1">Statut: <span class="text-yellow-500">En attente de snapshot</span></div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script>
+        // --- Simulation Data & Logic (À remplacer par connexion WebSocket réelle vers Python) ---
+        
+        const state = {
+            symbol: 'BTCUSDT',
+            basePrice: 64000,
+            bids: [],
+            asks: [],
+            stats: { walls: 0, wallsBuy: 0, wallsSell: 0, absorptions: 0 }
+        };
+
+        // Générateur de données simulées pour la démo
+        function generateOrderBook(basePrice) {
+            let bids = [];
+            let asks = [];
+            let currentBid = basePrice;
+            let currentAsk = basePrice + 0.5; // Spread initial
+
+            for(let i=0; i<20; i++) {
+                // Volume aléatoire avec chance de "Mur"
+                let isWall = Math.random() > 0.9; 
+                let qty = isWall ? (Math.random() * 50 + 10) : (Math.random() * 2 + 0.1);
+                bids.push({ price: currentBid, qty: parseFloat(qty.toFixed(2)) });
+                currentBid -= (Math.random() * 0.5 + 0.1);
+
+                isWall = Math.random() > 0.9;
+                qty = isWall ? (Math.random() * 50 + 10) : (Math.random() * 2 + 0.1);
+                asks.push({ price: currentAsk, qty: parseFloat(qty.toFixed(2)) });
+                currentAsk += (Math.random() * 0.5 + 0.1);
+            }
+            return { bids, asks };
+        }
+
+        // Rendu du Carnet d'Ordres
+        function renderOrderBook(data) {
+            const bidsList = document.getElementById('bidsList');
+            const asksList = document.getElementById('asksList');
+            
+            // Calcul max volume pour l'échelle des barres
+            const maxVol = Math.max(
+                ...data.bids.map(b => b.qty), 
+                ...data.asks.map(a => a.qty)
+            );
+
+            // Render Bids
+            bidsList.innerHTML = '';
+            data.bids.forEach((bid, index) => {
+                const width = (bid.qty / maxVol) * 100;
+                const isSignificant = bid.qty > (data.bids.reduce((a,b)=>a+b.qty,0) * 0.05); // Simple wall check
+                
+                const row = document.createElement('div');
+                row.className = `order-row relative ${isSignificant ? 'bg-green-900/20' : ''}`;
+                row.innerHTML = `
+                    <div class="w-1/3 text-left text-gray-400"></div>
+                    <div class="w-1/3 text-center font-mono text-white z-10">${bid.price.toFixed(2)}</div>
+                    <div class="w-1/3 text-right text-green-400 z-10">${bid.qty}</div>
+                    <div class="bar-container bar-buy" style="width: ${width}%"></div>
+                `;
+                bidsList.appendChild(row);
+            });
+
+            // Render Asks (Reverse order for visual stack)
+            asksList.innerHTML = '';
+            [...data.asks].reverse().forEach((ask, index) => {
+                const width = (ask.qty / maxVol) * 100;
+                const isSignificant = ask.qty > (data.asks.reduce((a,b)=>a+b.qty,0) * 0.05);
+
+                const row = document.createElement('div');
+                row.className = `order-row relative ${isSignificant ? 'bg-red-900/20' : ''}`;
+                row.innerHTML = `
+                    <div class="w-1/3 text-left text-red-400 z-10">${ask.qty}</div>
+                    <div class="w-1/3 text-center font-mono text-white z-10">${ask.price.toFixed(2)}</div>
+                    <div class="w-1/3 text-right text-gray-400"></div>
+                    <div class="bar-container bar-sell" style="width: ${width}%"></div>
+                `;
+                asksList.appendChild(row);
+            });
+
+            // Update Spread
+            const bestBid = data.bids[0].price;
+            const bestAsk = data.asks[0].price;
+            document.getElementById('spreadValue').innerText = (bestAsk - bestBid).toFixed(2);
+
+            // Update Imbalance
+            const totalBidVol = data.bids.reduce((a,b)=>a+b.qty,0);
+            const totalAskVol = data.asks.reduce((a,b)=>a+b.qty,0);
+            const total = totalBidVol + totalAskVol;
+            const ratio = totalBidVol / total;
+            
+            const marker = document.getElementById('imbalanceMarker');
+            const text = document.getElementById('imbalanceText');
+            const percent = (ratio * 100).toFixed(1);
+            
+            marker.style.left = `${percent}%`;
+            text.innerText = `${percent}% Acheteurs / ${(100-percent).toFixed(1)}% Vendeurs`;
+            
+            // Couleur dynamique
+            if(ratio > 0.6) text.className = "text-center mt-2 text-sm font-mono text-green-400";
+            else if(ratio < 0.4) text.className = "text-center mt-2 text-sm font-mono text-red-400";
+            else text.className = "text-center mt-2 text-sm font-mono text-gray-400";
+
+            // Détection simulée de signaux
+            detectSignals(data, ratio);
+        }
+
+        // Détection de signaux (Logique simplifiée pour la démo)
+        function detectSignals(data, ratio) {
+            const totalBid = data.bids.reduce((a,b)=>a+b.qty,0);
+            const maxBid = Math.max(...data.bids.map(b=>b.qty));
+            
+            // Check Wall Buy
+            if(maxBid > totalBid * 0.15) { // Seuil haut pour la démo
+                const price = data.bids.find(b => b.qty === maxBid).price;
+                addSignal('WALL_BUY', price, `Mur d'achat massif (${maxBid.toFixed(1)})`, 0.9);
+            }
+
+            // Check Imbalance Spike
+            if(ratio > 0.75 || ratio < 0.25) {
+                const type = ratio > 0.75 ? 'IMBALANCE_BUY' : 'IMBALANCE_SELL';
+                const msg = ratio > 0.75 ? 'Pression Achat Extrême' : 'Pression Vente Extrême';
+                addSignal(type, ratio > 0.75 ? data.bids[0].price : data.asks[0].price, msg, 0.8);
+            }
+        }
+
+        // Ajout d'un signal au flux
+        function addSignal(type, price, desc, strength) {
+            // Éviter le spam (simple debounce logic omitted for brevity)
+            const feed = document.getElementById('signalsFeed');
+            const firstChild = feed.firstElementChild;
+            if(firstChild && firstChild.innerText.includes(desc.substring(0,10))) return;
+
+            const isBuy = type.includes('BUY') || type.includes('ABSORPTION');
+            const colorClass = isBuy ? 'signal-buy' : 'signal-sell';
+            const icon = isBuy ? '🟢' : '🔴';
+            const time = new Date().toLocaleTimeString();
+
+            const card = document.createElement('div');
+            card.className = `glass-panel p-3 signal-card ${colorClass} mb-2`;
+            card.innerHTML = `
+                <div class="flex justify-between items-start">
+                    <div>
+                        <div class="text-xs font-bold text-gray-300">${type.replace('_', ' ')}</div>
+                        <div class="text-sm text-white mt-1">${desc}</div>
+                        <div class="text-xs text-gray-500 mt-1 font-mono">@ ${price.toFixed(2)}</div>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-xl">${icon}</span>
+                        <div class="text-xs text-gray-600 mt-1">${time}</div>
+                    </div>
+                </div>
+            `;
+            
+            feed.prepend(card);
+            if(feed.children.length > 20) feed.lastElementChild.remove();
+
+            // Update Stats
+            if(type.includes('WALL')) {
+                state.stats.walls++;
+                if(isBuy) state.stats.wallsBuy++; else state.stats.wallsSell++;
+                document.getElementById('statWalls').innerText = state.stats.walls;
+                document.getElementById('statWallsBuy').innerText = state.stats.wallsBuy;
+                document.getElementById('statWallsSell').innerText = state.stats.wallsSell;
+            }
+            if(type.includes('ABSORPTION')) {
+                state.stats.absorptions++;
+                document.getElementById('statAbsorptions').innerText = state.stats.absorptions;
+            }
+        }
+
+        // Boucle de simulation
+        setInterval(() => {
+            // Variation légère du prix de base
+            state.basePrice += (Math.random() - 0.5) * 5;
+            const data = generateOrderBook(state.basePrice);
+            renderOrderBook(data);
+            
+            // Simuler latence
+            document.getElementById('latencyDisplay').innerText = Math.floor(Math.random() * 20 + 10) + ' ms';
+        }, 500); // Mise à jour toutes les 500ms
+
+        // Gestion changement d'actif
+        document.getElementById('assetSelector').addEventListener('change', (e) => {
+            state.symbol = e.target.value;
+            state.basePrice = state.symbol === 'BTCUSDT' ? 64000 : (state.symbol === 'ETHUSDT' ? 3400 : 140);
+            document.getElementById('signalsFeed').innerHTML = '<div class="text-center text-gray-600 text-sm py-8 italic">Changement d\'actif... En écoute</div>';
+        });
+
+    </script>
+</body>
+</html>
